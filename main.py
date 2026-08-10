@@ -240,6 +240,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             data = res.json()
             if data.get("result") == 100:
                 coins = data.get("data", [])
+                
+                if not coins:
+                    await update.message.reply_text(f"⚠️ OxaPay API returned no coins. Raw data: {json.dumps(data)}\nPlease check your OxaPay Merchant settings and enable 'Accepted Coins'.")
+                    return
+                    
                 keyboard = []
                 for coin in coins:
                     if isinstance(coin, dict):
