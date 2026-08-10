@@ -172,7 +172,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 ]
                 await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard))
             else:
-                await query.edit_message_text(f"❌ Error generating address: {res_data.get('message')}")
+                await query.edit_message_text(f"❌ Error generating address: {res_data.get('message')}\nDetails: {json.dumps(res_data)}")
         except Exception as e:
             logging.error(f"OxaPay API Error: {e}")
             await query.edit_message_text("❌ Error connecting to payment provider.")
