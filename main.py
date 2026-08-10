@@ -3,8 +3,11 @@ import sqlite3
 import json
 import requests
 import uuid
+import os
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, CallbackQueryHandler, filters
+
+DB_PATH = os.getenv('DB_PATH', 'mongyni.db')
 
 # --- CONFIGURATION ---
 BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"
@@ -17,7 +20,7 @@ logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s
 
 # --- DATABASE SETUP & FUNCTIONS ---
 def init_db():
-    conn = sqlite3.connect('mongyni.db')
+    conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute('''CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, balance REAL)''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS products (id TEXT PRIMARY KEY, stock INTEGER)''')
@@ -28,7 +31,7 @@ def init_db():
     conn.close()
 
 def get_user_balance(user_id):
-    conn = sqlite3.connect('mongyni.db')
+    conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute('SELECT balance FROM users WHERE user_id = ?', (user_id,))
     result = cursor.fetchone()
@@ -42,14 +45,14 @@ def get_user_balance(user_id):
     return balance
 
 def update_user_balance(user_id, amount_change):
-    conn = sqlite3.connect('mongyni.db')
+    conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute('UPDATE users SET balance = balance + ? WHERE user_id = ?', (amount_change, user_id))
     conn.commit()
     conn.close()
 
 def get_product_stock(product_id='office365'):
-    conn = sqlite3.connect('mongyni.db')
+    conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute('SELECT stock FROM products WHERE id = ?', (product_id,))
     result = cursor.fetchone()
@@ -58,7 +61,7 @@ def get_product_stock(product_id='office365'):
     return stock
 
 def reduce_product_stock(product_id='office365'):
-    conn = sqlite3.connect('mongyni.db')
+    conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute('UPDATE products SET stock = stock - 1 WHERE id = ? AND stock > 0', (product_id,))
     success = cursor.rowcount > 0
@@ -138,7 +141,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 track_id = res_data.get("trackId")
                 
                 # Save transaction
-                conn = sqlite3.connect('mongyni.db')
+                conn = sqlite3.connect(DB_PATH)
                 cursor = conn.cursor()
                 cursor.execute('INSERT INTO transactions (track_id, user_id, amount, status) VALUES (?, ?, ?, ?)', (track_id, user_id, amount, "pending"))
                 conn.commit()
