@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mongyni Store</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background-color: var(--tg-theme-bg-color, #f4f4f4);
+            color: var(--tg-theme-text-color, #000000);
+            text-align: center;
+            padding: 20px;
+            margin: 0;
+        }
+        .container {
+            background-color: var(--tg-theme-secondary-bg-color, #ffffff);
+            padding: 20px;
+            border-radius: 15px;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+            margin-top: 20px;
+        }
+        h2 { margin-bottom: 5px; }
+        .balance {
+            font-size: 18px;
+            font-weight: bold;
+            color: #28a745;
+            margin-bottom: 20px;
+        }
+        .product-btn {
+            width: 100%;
+            padding: 15px;
+            font-size: 16px;
+            font-weight: bold;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: 0.3s;
+        }
+        /* Colors */
+        .btn-green { background-color: #28a745; } /* > 50 */
+        .btn-orange { background-color: #fd7e14; } /* 10 to 50 */
+        .btn-red { background-color: #dc3545; } /* < 10 */
+        .btn-disabled { 
+            background-color: #6c757d; 
+            cursor: not-allowed; 
+            opacity: 0.7;
+        }
+        .add-funds-btn {
+            background-color: #007bff;
+            width: 100%;
+            padding: 12px;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            margin-top: 15px;
+            cursor: pointer;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="container">
+        <h2>Office 365 1TB</h2>
+        <div class="balance" id="userBalance">Balance: $0.00</div>
+
+        <button id="buyBtn" class="product-btn"></button>
+
+        <!-- Button to trigger OxaPay later -->
+        <button id="addFundsBtn" class="add-funds-btn">Add Funds (OxaPay)</button>
+    </div>
+
+    <script>
+        const tg = window.Telegram.WebApp;
+        tg.expand();
+
+        // Get data from URL sent by Python Bot
+        const urlParams = new URLSearchParams(window.location.search);
+        const stock = parseInt(urlParams.get('stock')) || 0;
+        const balance = parseFloat(urlParams.get('balance')) || 0.0;
+        const userId = urlParams.get('userid');
+
+        // Display Balance
+        document.getElementById('userBalance').innerText = `Balance: $${balance.toFixed(2)}`;
+
+        const buyBtn = document.getElementById('buyBtn');
+
+        // Logic for Button Colors and Text
+        if (stock === 0) {
+            buyBtn.className = "product-btn btn-disabled";
+            buyBtn.innerText = "Office 365 1TB (Out of Stock)";
+            buyBtn.disabled = true;
+        } else if (stock < 10) {
+            buyBtn.className = "product-btn btn-red";
+            buyBtn.innerText = `Office 365 1TB (${stock} left)`;
+        } else if (stock <= 50) {
+            buyBtn.className = "product-btn btn-orange";
+            buyBtn.innerText = `Office 365 1TB (${stock} left)`;
+        } else {
+            buyBtn.className = "product-btn btn-green";
+            buyBtn.innerText = `Office 365 1TB (${stock} left)`;
+        }
+
+        // Action when Buy is clicked
+        buyBtn.addEventListener('click', () => {
+            if (stock > 0) {
+                // Send data back to Bot to process the order
+                tg.sendData(JSON.stringify({
+                    action: "buy_product",
+                    product_id: "office365"
+                }));
+            }
+        });
+
+        // Action for Add Funds (We will link this to OxaPay later)
+        document.getElementById('addFundsBtn').addEventListener('click', () => {
+            tg.sendData(JSON.stringify({
+                action: "add_funds"
+            }));
+        });
+    </script>
+</body>
+</html>
