@@ -7,71 +7,99 @@
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
     <style>
         body {
-            font-family: Arial, sans-serif;
-            background-color: var(--tg-theme-bg-color, #f4f4f4);
-            color: var(--tg-theme-text-color, #000000);
-            text-align: center;
-            padding: 20px;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            background-color: #121212; /* Dark background */
+            color: #ffffff;
             margin: 0;
-        }
-        .container {
-            background-color: var(--tg-theme-secondary-bg-color, #ffffff);
             padding: 20px;
-            border-radius: 15px;
-            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
-            margin-top: 20px;
         }
-        h2 { margin-bottom: 5px; }
-        .balance {
-            font-size: 18px;
-            font-weight: bold;
-            color: #28a745;
-            margin-bottom: 20px;
+        .header {
+            margin-bottom: 25px;
         }
+        .header h1 {
+            font-size: 22px;
+            margin: 0 0 5px 0;
+            font-weight: 700;
+        }
+        .header p {
+            font-size: 16px;
+            margin: 0;
+            color: #cccccc;
+        }
+        
+        .balance-info {
+            font-size: 16px;
+            font-weight: 600;
+            margin-bottom: 15px;
+            color: #4CAF50;
+        }
+
         .product-btn {
+            width: 100%;
+            padding: 18px 15px;
+            font-size: 16px;
+            font-weight: 600;
+            color: white;
+            border: none;
+            border-radius: 12px;
+            cursor: pointer;
+            margin-bottom: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+            transition: opacity 0.2s;
+        }
+        .product-btn:active {
+            opacity: 0.8;
+        }
+
+        /* Colors based on stock */
+        .btn-green { background-color: #2e8b57; } /* > 50 */
+        .btn-orange { background-color: #d2691e; } /* 10 to 50 */
+        .btn-red { background-color: #b83a38; } /* < 10 */
+        
+        .btn-disabled { 
+            background-color: #b83a38; /* Red for out of stock */
+            cursor: not-allowed; 
+            opacity: 0.6;
+        }
+
+        .action-btn {
             width: 100%;
             padding: 15px;
             font-size: 16px;
             font-weight: bold;
             color: white;
+            background-color: #333333;
             border: none;
-            border-radius: 8px;
+            border-radius: 12px;
+            margin-top: 10px;
             cursor: pointer;
-            transition: 0.3s;
         }
-        /* Colors */
-        .btn-green { background-color: #28a745; } /* > 50 */
-        .btn-orange { background-color: #fd7e14; } /* 10 to 50 */
-        .btn-red { background-color: #dc3545; } /* < 10 */
-        .btn-disabled { 
-            background-color: #6c757d; 
-            cursor: not-allowed; 
-            opacity: 0.7;
-        }
-        .add-funds-btn {
-            background-color: #007bff;
-            width: 100%;
-            padding: 12px;
-            color: white;
-            border: none;
-            border-radius: 8px;
-            margin-top: 15px;
-            cursor: pointer;
-            font-weight: bold;
+        .action-btn:active {
+            background-color: #444444;
         }
     </style>
 </head>
 <body>
 
-    <div class="container">
-        <h2>Office 365 1TB</h2>
-        <div class="balance" id="userBalance">Balance: $0.00</div>
-
-        <button id="buyBtn" class="product-btn"></button>
-
-        <!-- Button to trigger OxaPay later -->
-        <button id="addFundsBtn" class="add-funds-btn">Add Funds (OxaPay)</button>
+    <div class="header">
+        <h1>Available products</h1>
+        <p>Please select a product to proceed</p>
     </div>
+
+    <div class="balance-info" id="userBalance">Balance: $0.00</div>
+
+    <!-- Product Button -->
+    <button id="buyBtn" class="product-btn"></button>
+
+    <!-- Add Funds Button -->
+    <button id="addFundsBtn" class="action-btn">💳 Add Funds (OxaPay)</button>
+    
+    <!-- Close / Go Back Button -->
+    <button id="closeBtn" class="action-btn" style="background-color: #b83a38; color: #ffd700;">◀ Go Back</button>
 
     <script>
         const tg = window.Telegram.WebApp;
@@ -81,33 +109,34 @@
         const urlParams = new URLSearchParams(window.location.search);
         const stock = parseInt(urlParams.get('stock')) || 0;
         const balance = parseFloat(urlParams.get('balance')) || 0.0;
-        const userId = urlParams.get('userid');
 
         // Display Balance
-        document.getElementById('userBalance').innerText = `Balance: $${balance.toFixed(2)}`;
+        document.getElementById('userBalance').innerText = `Your Balance: $${balance.toFixed(2)}`;
 
         const buyBtn = document.getElementById('buyBtn');
+        const icon = "📦";
+        const productName = "Office 365 1TB";
+        const price = "$1.30";
 
-        // Logic for Button Colors and Text
+        // Logic for Button Colors and Text matching the screenshot style
         if (stock === 0) {
             buyBtn.className = "product-btn btn-disabled";
-            buyBtn.innerText = "Office 365 1TB - $1.30 (Out of Stock)";
+            buyBtn.innerText = `${icon} ${productName} - ${price} | Stock: ${stock}`;
             buyBtn.disabled = true;
         } else if (stock < 10) {
             buyBtn.className = "product-btn btn-red";
-            buyBtn.innerText = `Office 365 1TB - $1.30 (${stock} left)`;
+            buyBtn.innerText = `${icon} ${productName} - ${price} | Stock: ${stock}`;
         } else if (stock <= 50) {
             buyBtn.className = "product-btn btn-orange";
-            buyBtn.innerText = `Office 365 1TB - $1.30 (${stock} left)`;
+            buyBtn.innerText = `${icon} ${productName} - ${price} | Stock: ${stock}`;
         } else {
             buyBtn.className = "product-btn btn-green";
-            buyBtn.innerText = `Office 365 1TB - $1.30 (${stock} left)`;
+            buyBtn.innerText = `${icon} ${productName} - ${price} | Stock: ${stock}`;
         }
 
         // Action when Buy is clicked
         buyBtn.addEventListener('click', () => {
             if (stock > 0) {
-                // Send data back to Bot to process the order
                 tg.sendData(JSON.stringify({
                     action: "buy_product",
                     product_id: "office365"
@@ -115,11 +144,16 @@
             }
         });
 
-        // Action for Add Funds (We will link this to OxaPay later)
+        // Action for Add Funds
         document.getElementById('addFundsBtn').addEventListener('click', () => {
             tg.sendData(JSON.stringify({
                 action: "add_funds"
             }));
+        });
+
+        // Action for Go Back
+        document.getElementById('closeBtn').addEventListener('click', () => {
+            tg.close();
         });
     </script>
 </body>
