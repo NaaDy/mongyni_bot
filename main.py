@@ -126,9 +126,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await start(update, context)
 
     elif data.startswith("paycoin_"):
-        parts = data.split("_")
+        parts = data.split("_", 2)
         pay_currency = parts[1]
-        network = parts[2]
+        network = parts[2] if len(parts) > 2 else None
         amount = context.user_data.get('deposit_amount')
         
         if not amount:
@@ -142,10 +142,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             "amount": amount,
             "currency": "USD",
             "payCurrency": pay_currency,
-            "network": network,
             "orderId": order_id,
             "description": f"Add funds for User {user_id}"
         }
+        if network and network != "none":
+            payload["network"] = network
+            
         try:
             response = requests.post("https://api.oxapay.com/merchants/request/whitelabel", json=payload)
             res_data = response.json()
@@ -161,7 +163,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 conn.close()
                 
                 msg = (f"⚠️ Please send EXACTLY this amount:\n{pay_amount} {pay_currency}\n\n"
-                       f"📬 To this {network} address:\n{address}\n\n"
+                       f"📬 To this address:\n{address}\n\n"
                        f"Once you have sent the funds, click the button below to check your payment status.")
                        
                 keyboard = [
@@ -233,12 +235,31 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         context.user_data['awaiting_amount'] = False
         context.user_data['deposit_amount'] = amount
         
-        keyboard = [
-            [InlineKeyboardButton("USDT (TRC20)", callback_data="paycoin_USDT_TRC20")],
-            [InlineKeyboardButton("TRX (Tron)", callback_data="paycoin_TRX_TRC20")],
-            [InlineKeyboardButton("◀ Cancel", callback_data="main_menu")]
-        ]
-        await update.message.reply_text(f"Amount: ${amount:.2f}\nChoose your payment coin:", reply_markup=InlineKeyboardMarkup(keyboard))
+        try:
+            res = requests.post("https://api.oxapay.com/merchants/allowedCoins", json={"merchant": OXAPAY_MERCHANT_KEY})
+            data = res.json()
+            if data.get("result") == 100:
+                coins = data.get("data", [])
+                keyboard = []
+                for coin in coins:
+                    if isinstance(coin, dict):
+                        currency = coin.get("currency")
+                        network = coin.get("network")
+                        name = coin.get("name", currency)
+                        btn_text = f"{name} ({network})" if network else name
+                        cb_data = f"paycoin_{currency}_{network}" if network else f"paycoin_{currency}_none"
+                    else:
+                        btn_text = str(coin)
+                        cb_data = f"paycoin_{coin}_none"
+                    keyboard.append([InlineKeyboardButton(btn_text, callback_data=cb_data)])
+                
+                keyboard.append([InlineKeyboardButton("◀ Cancel", callback_data="main_menu")])
+                await update.message.reply_text(f"Amount: ${amount:.2f}\nChoose your payment method:", reply_markup=InlineKeyboardMarkup(keyboard))
+            else:
+                await update.message.reply_text(f"❌ Error fetching payment methods: {data.get('message')}")
+        except Exception as e:
+            logging.error(f"OxaPay API Error: {e}")
+            await update.message.reply_text("❌ Error connecting to payment provider.")
 
 # --- MAIN RUNNER ---
 def main() -> None:
