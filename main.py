@@ -224,7 +224,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                         [InlineKeyboardButton("Check Payment Status", callback_data=f"checkpay_{track_id}")],
                         [InlineKeyboardButton("◀ Back", callback_data="main_menu")]
                     ]
-                    await query.edit_message_text(f"⏳ Payment is still pending (Status: {status}). Try again in a moment.", reply_markup=InlineKeyboardMarkup(keyboard))
+                    await query.edit_message_text(f"⏳ Payment is still pending (Status: {status}).\nRaw details: {json.dumps(res_data)}", reply_markup=InlineKeyboardMarkup(keyboard))
             else:
                 await query.edit_message_text("❌ Transaction not found.")
             conn.close()
