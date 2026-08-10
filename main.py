@@ -239,12 +239,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             res = requests.post("https://api.oxapay.com/merchants/allowedCoins", json={"merchant": OXAPAY_MERCHANT_KEY})
             data = res.json()
             if data.get("result") == 100:
-                coins = data.get("data", [])
-                
-                if not coins:
-                    await update.message.reply_text(f"⚠️ OxaPay API returned no coins. Raw data: {json.dumps(data)}\nPlease check your OxaPay Merchant settings and enable 'Accepted Coins'.")
-                    return
-                    
+                coins = data.get("allowed", [])
                 keyboard = []
                 for coin in coins:
                     if isinstance(coin, dict):
@@ -258,6 +253,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                         cb_data = f"paycoin_{coin}_none"
                     keyboard.append([InlineKeyboardButton(btn_text, callback_data=cb_data)])
                 
+                if not keyboard:
+                    await update.message.reply_text("❌ No payment methods configured. Please check your OxaPay merchant settings.")
+                    return
+                    
                 keyboard.append([InlineKeyboardButton("◀ Cancel", callback_data="main_menu")])
                 await update.message.reply_text(f"Amount: ${amount:.2f}\nChoose your payment method:", reply_markup=InlineKeyboardMarkup(keyboard))
             else:
