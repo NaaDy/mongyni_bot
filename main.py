@@ -71,60 +71,61 @@ def reduce_product_stock(product_id='office365'):
 
 # --- BOT COMMANDS ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_id = update.message.from_user.id
+    user_id = update.effective_user.id
     balance = get_user_balance(user_id)
     stock = get_product_stock()
 
-    web_app_url_with_data = f"{MINI_APP_URL}?stock={stock}&balance={balance}&userid={user_id}"
-
+    icon = "🔴" if stock == 0 else ("🔴" if stock < 10 else ("🟠" if stock <= 50 else "🟢"))
+    btn_text = f"{icon} Office 365 1TB - $1.30 (Stock: {stock})"
+    
     keyboard = [
-        [InlineKeyboardButton("Open Store 🛒", web_app=WebAppInfo(url=web_app_url_with_data))]
+        [InlineKeyboardButton(btn_text, callback_data="buy_office365")],
+        [InlineKeyboardButton("💳 Add Funds", callback_data="menu_addfunds")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    await update.message.reply_text(
-        f"Welcome to Mongyni Store!\n\nYour ID: {user_id}\nYour Balance: ${balance:.2f}",
-        reply_markup=reply_markup
-    )
+    msg = f"Welcome to Mongyni Store!\n\nYour ID: {user_id}\nYour Balance: ${balance:.2f}\n\nPlease select an option below:"
+    if update.callback_query:
+        await update.callback_query.edit_message_text(msg, reply_markup=reply_markup)
+    else:
+        await update.message.reply_text(msg, reply_markup=reply_markup)
 
-# --- HANDLE WEB APP CLICKS ---
-async def web_app_data(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    data = json.loads(update.message.web_app_data.data)
-    action = data.get("action")
-    user_id = update.message.from_user.id
-
-    if action == "buy_product":
-        balance = get_user_balance(user_id)
-        if balance >= PRODUCT_PRICE:
-            if reduce_product_stock():
-                update_user_balance(user_id, -PRODUCT_PRICE)
-                new_balance = get_user_balance(user_id)
-                await update.message.reply_text(f"✅ Purchase successful! $1.30 has been deducted.\n\nYour remaining balance: ${new_balance:.2f}\n\nHere are your Office 365 1TB details:\n[Product credentials would go here]")
-            else:
-                await update.message.reply_text("❌ Sorry, this product is currently out of stock.")
-        else:
-            await update.message.reply_text(f"❌ Insufficient funds. You need ${PRODUCT_PRICE:.2f} but your balance is ${balance:.2f}. Please add funds.")
-            
-    elif action == "add_funds":
-        keyboard = [
-            [InlineKeyboardButton("$2", callback_data="addfunds_2"), InlineKeyboardButton("$5", callback_data="addfunds_5")],
-            [InlineKeyboardButton("$10", callback_data="addfunds_10"), InlineKeyboardButton("$20", callback_data="addfunds_20")]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await update.message.reply_text("Select the amount you want to add to your balance:", reply_markup=reply_markup)
-
-# --- HANDLE INLINE BUTTONS (OXAPAY) ---
+# --- HANDLE INLINE BUTTONS ---
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
     data = query.data
     user_id = query.from_user.id
 
-    if data.startswith("addfunds_"):
+    if data == "main_menu":
+        await start(update, context)
+
+    elif data == "buy_office365":
+        balance = get_user_balance(user_id)
+        if balance >= PRODUCT_PRICE:
+            if reduce_product_stock():
+                update_user_balance(user_id, -PRODUCT_PRICE)
+                new_balance = get_user_balance(user_id)
+                await query.edit_message_text(f"✅ Purchase successful! $1.30 has been deducted.\n\nYour remaining balance: ${new_balance:.2f}\n\nHere are your Office 365 1TB details:\n[Product credentials would go here]")
+            else:
+                await query.answer("❌ Sorry, this product is currently out of stock.", show_alert=True)
+                await start(update, context)
+        else:
+            await query.answer(f"❌ Insufficient funds. You need ${PRODUCT_PRICE:.2f}.", show_alert=True)
+            await start(update, context)
+            
+    elif data == "menu_addfunds":
+        keyboard = [
+            [InlineKeyboardButton("$2", callback_data="addfunds_2"), InlineKeyboardButton("$5", callback_data="addfunds_5")],
+            [InlineKeyboardButton("$10", callback_data="addfunds_10"), InlineKeyboardButton("$20", callback_data="addfunds_20")],
+            [InlineKeyboardButton("◀ Back", callback_data="main_menu")]
+        ]
+        await query.edit_message_text("Select the amount you want to add to your balance:", reply_markup=InlineKeyboardMarkup(keyboard))
+
+    elif data.startswith("addfunds_"):
         amount = float(data.split("_")[1])
         order_id = str(uuid.uuid4())
         
-        # Request OxaPay payment link
         payload = {
             "merchant": OXAPAY_MERCHANT_KEY,
             "amount": amount,
@@ -132,7 +133,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             "orderId": order_id,
             "description": f"Add funds for User {user_id}"
         }
-        
         try:
             response = requests.post("https://api.oxapay.com/merchants/request", json=payload)
             res_data = response.json()
@@ -140,7 +140,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 pay_link = res_data.get("payLink")
                 track_id = res_data.get("trackId")
                 
-                # Save transaction
                 conn = sqlite3.connect(DB_PATH)
                 cursor = conn.cursor()
                 cursor.execute('INSERT INTO transactions (track_id, user_id, amount, status) VALUES (?, ?, ?, ?)', (track_id, user_id, amount, "pending"))
@@ -149,7 +148,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 
                 keyboard = [
                     [InlineKeyboardButton("Pay via OxaPay", url=pay_link)],
-                    [InlineKeyboardButton("Check Payment Status", callback_data=f"checkpay_{track_id}")]
+                    [InlineKeyboardButton("Check Payment Status", callback_data=f"checkpay_{track_id}")],
+                    [InlineKeyboardButton("◀ Back", callback_data="main_menu")]
                 ]
                 await query.edit_message_text(f"Click the button below to pay ${amount}. Once completed, click 'Check Payment Status'.", reply_markup=InlineKeyboardMarkup(keyboard))
             else:
@@ -165,13 +165,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             "merchant": OXAPAY_MERCHANT_KEY,
             "trackId": int(track_id)
         }
-        
         try:
             response = requests.post("https://api.oxapay.com/merchants/inquiry", json=payload)
             res_data = response.json()
             status = res_data.get("status")
             
-            conn = sqlite3.connect('mongyni.db')
+            conn = sqlite3.connect(DB_PATH)
             cursor = conn.cursor()
             cursor.execute('SELECT status, amount FROM transactions WHERE track_id = ? AND user_id = ?', (track_id, user_id))
             txn = cursor.fetchone()
@@ -191,9 +190,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                     conn.commit()
                     await query.edit_message_text("❌ This payment link has expired. Please request a new one.")
                 else:
-                    # Still pending
                     keyboard = [
-                        [InlineKeyboardButton("Check Payment Status", callback_data=f"checkpay_{track_id}")]
+                        [InlineKeyboardButton("Check Payment Status", callback_data=f"checkpay_{track_id}")],
+                        [InlineKeyboardButton("◀ Back", callback_data="main_menu")]
                     ]
                     await query.edit_message_text(f"⏳ Payment is still pending (Status: {status}). Try again in a moment.", reply_markup=InlineKeyboardMarkup(keyboard))
             else:
@@ -209,7 +208,6 @@ def main() -> None:
     application = Application.builder().token(BOT_TOKEN).build()
 
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(MessageHandler(filters.StatusUpdate.WEB_APP_DATA, web_app_data))
     application.add_handler(CallbackQueryHandler(button_handler))
 
     print("Mongyni Bot is running...")
