@@ -131,6 +131,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         network = parts[2] if len(parts) > 2 else None
         amount = context.user_data.get('deposit_amount')
         
+        if pay_currency == "USDT" and (not network or network == "none"):
+            network = "trc20"
+            
         if not amount:
             await query.edit_message_text("❌ Session expired. Please try again.")
             return
