@@ -209,13 +209,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 db_status, amount = txn
                 if db_status == "completed":
                     await query.edit_message_text(f"✅ This payment of ${amount} has already been credited to your account.")
-                elif status == "Paid":
+                elif status.lower() == "paid":
                     cursor.execute('UPDATE transactions SET status = ? WHERE track_id = ?', ("completed", track_id))
                     conn.commit()
                     update_user_balance(user_id, amount)
                     new_balance = get_user_balance(user_id)
                     await query.edit_message_text(f"✅ Payment successful! ${amount} added. New balance: ${new_balance:.2f}")
-                elif status == "Expired":
+                elif status.lower() == "expired":
                     cursor.execute('UPDATE transactions SET status = ? WHERE track_id = ?', ("expired", track_id))
                     conn.commit()
                     await query.edit_message_text("❌ This payment link has expired. Please request a new one.")
