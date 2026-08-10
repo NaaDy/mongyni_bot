@@ -91,17 +91,17 @@
         // Logic for Button Colors and Text
         if (stock === 0) {
             buyBtn.className = "product-btn btn-disabled";
-            buyBtn.innerText = "Office 365 1TB (Out of Stock)";
+            buyBtn.innerText = "Office 365 1TB - $1.30 (Out of Stock)";
             buyBtn.disabled = true;
         } else if (stock < 10) {
             buyBtn.className = "product-btn btn-red";
-            buyBtn.innerText = `Office 365 1TB (${stock} left)`;
+            buyBtn.innerText = `Office 365 1TB - $1.30 (${stock} left)`;
         } else if (stock <= 50) {
             buyBtn.className = "product-btn btn-orange";
-            buyBtn.innerText = `Office 365 1TB (${stock} left)`;
+            buyBtn.innerText = `Office 365 1TB - $1.30 (${stock} left)`;
         } else {
             buyBtn.className = "product-btn btn-green";
-            buyBtn.innerText = `Office 365 1TB (${stock} left)`;
+            buyBtn.innerText = `Office 365 1TB - $1.30 (${stock} left)`;
         }
 
         // Action when Buy is clicked
