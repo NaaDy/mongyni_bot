@@ -115,48 +115,15 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await start(update, context)
             
     elif data == "menu_addfunds":
+        context.user_data['awaiting_amount'] = True
         keyboard = [
-            [InlineKeyboardButton("$2", callback_data="addfunds_2"), InlineKeyboardButton("$5", callback_data="addfunds_5")],
-            [InlineKeyboardButton("$10", callback_data="addfunds_10"), InlineKeyboardButton("$20", callback_data="addfunds_20")],
-            [InlineKeyboardButton("◀ Back", callback_data="main_menu")]
+            [InlineKeyboardButton("◀ Cancel", callback_data="cancel_addfunds")]
         ]
-        await query.edit_message_text("Select the amount you want to add to your balance:", reply_markup=InlineKeyboardMarkup(keyboard))
+        await query.edit_message_text("Please type and send the amount you want to add (e.g. 5 or 2.50):", reply_markup=InlineKeyboardMarkup(keyboard))
 
-    elif data.startswith("addfunds_"):
-        amount = float(data.split("_")[1])
-        order_id = str(uuid.uuid4())
-        
-        payload = {
-            "merchant": OXAPAY_MERCHANT_KEY,
-            "amount": amount,
-            "currency": "USD",
-            "orderId": order_id,
-            "description": f"Add funds for User {user_id}"
-        }
-        try:
-            response = requests.post("https://api.oxapay.com/merchants/request", json=payload)
-            res_data = response.json()
-            if res_data.get("result") == 100:
-                pay_link = res_data.get("payLink")
-                track_id = res_data.get("trackId")
-                
-                conn = sqlite3.connect(DB_PATH)
-                cursor = conn.cursor()
-                cursor.execute('INSERT INTO transactions (track_id, user_id, amount, status) VALUES (?, ?, ?, ?)', (track_id, user_id, amount, "pending"))
-                conn.commit()
-                conn.close()
-                
-                keyboard = [
-                    [InlineKeyboardButton("Pay via OxaPay", url=pay_link)],
-                    [InlineKeyboardButton("Check Payment Status", callback_data=f"checkpay_{track_id}")],
-                    [InlineKeyboardButton("◀ Back", callback_data="main_menu")]
-                ]
-                await query.edit_message_text(f"Click the button below to pay ${amount}. Once completed, click 'Check Payment Status'.", reply_markup=InlineKeyboardMarkup(keyboard))
-            else:
-                await query.edit_message_text(f"❌ Error generating payment link: {res_data.get('message')}")
-        except Exception as e:
-            logging.error(f"OxaPay API Error: {e}")
-            await query.edit_message_text("❌ Error connecting to payment provider.")
+    elif data == "cancel_addfunds":
+        context.user_data['awaiting_amount'] = False
+        await start(update, context)
 
     elif data.startswith("checkpay_"):
         track_id = data.split("_")[1]
@@ -202,6 +169,53 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             logging.error(f"OxaPay Check Error: {e}")
             await query.answer("❌ Error checking payment status.", show_alert=True)
 
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if context.user_data.get('awaiting_amount'):
+        text = update.message.text
+        try:
+            amount = float(text)
+            if amount <= 0:
+                raise ValueError
+        except ValueError:
+            await update.message.reply_text("❌ Invalid amount. Please enter a valid number greater than 0.")
+            return
+
+        context.user_data['awaiting_amount'] = False
+        user_id = update.effective_user.id
+        order_id = str(uuid.uuid4())
+        
+        payload = {
+            "merchant": OXAPAY_MERCHANT_KEY,
+            "amount": amount,
+            "currency": "USD",
+            "orderId": order_id,
+            "description": f"Add funds for User {user_id}"
+        }
+        try:
+            response = requests.post("https://api.oxapay.com/merchants/request", json=payload)
+            res_data = response.json()
+            if res_data.get("result") == 100:
+                pay_link = res_data.get("payLink")
+                track_id = res_data.get("trackId")
+                
+                conn = sqlite3.connect(DB_PATH)
+                cursor = conn.cursor()
+                cursor.execute('INSERT INTO transactions (track_id, user_id, amount, status) VALUES (?, ?, ?, ?)', (track_id, user_id, amount, "pending"))
+                conn.commit()
+                conn.close()
+                
+                keyboard = [
+                    [InlineKeyboardButton("Pay via OxaPay", url=pay_link)],
+                    [InlineKeyboardButton("Check Payment Status", callback_data=f"checkpay_{track_id}")],
+                    [InlineKeyboardButton("◀ Main Menu", callback_data="main_menu")]
+                ]
+                await update.message.reply_text(f"Click the button below to pay ${amount}. Once completed, click 'Check Payment Status'.", reply_markup=InlineKeyboardMarkup(keyboard))
+            else:
+                await update.message.reply_text(f"❌ Error generating payment link: {res_data.get('message')}")
+        except Exception as e:
+            logging.error(f"OxaPay API Error: {e}")
+            await update.message.reply_text("❌ Error connecting to payment provider.")
+
 # --- MAIN RUNNER ---
 def main() -> None:
     init_db()
@@ -209,6 +223,7 @@ def main() -> None:
 
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CallbackQueryHandler(button_handler))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
     print("Mongyni Bot is running...")
     application.run_polling()
