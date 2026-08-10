@@ -165,15 +165,15 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 conn.commit()
                 conn.close()
                 
-                msg = (f"⚠️ Please send EXACTLY this amount:\n{pay_amount} {pay_currency}\n\n"
-                       f"📬 To this address:\n{address}\n\n"
+                msg = (f"⚠️ Please send EXACTLY this amount:\n<code>{pay_amount}</code> {pay_currency}\n\n"
+                       f"📬 To this {network.upper()} address (Tap to copy):\n<code>{address}</code>\n\n"
                        f"Once you have sent the funds, click the button below to check your payment status.")
                        
                 keyboard = [
                     [InlineKeyboardButton("Check Payment Status", callback_data=f"checkpay_{track_id}")],
                     [InlineKeyboardButton("◀ Main Menu", callback_data="main_menu")]
                 ]
-                await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard))
+                await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
             else:
                 await query.edit_message_text(f"❌ Error generating address: {res_data.get('message')}\nDetails: {json.dumps(res_data)}")
         except Exception as e:
