@@ -148,9 +148,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             
         order_id = str(uuid.uuid4())
         
+        # Add 0.04 fixed fee to the invoice amount
+        invoice_amount = amount + 0.04
+        
         payload = {
             "merchant": OXAPAY_MERCHANT_KEY,
-            "amount": amount,
+            "amount": invoice_amount,
             "currency": "USD",
             "payCurrency": pay_currency,
             "orderId": order_id,
@@ -276,12 +279,32 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             logging.error(f"OxaPay API Error: {e}")
             await update.message.reply_text("❌ Error connecting to payment provider.")
 
+async def addstock(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message.from_user.id != ADMIN_ID:
+        return
+    
+    try:
+        amount = int(context.args[0])
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute('UPDATE products SET stock = stock + ? WHERE id = ?', (amount, 'office365'))
+        conn.commit()
+        
+        cursor.execute('SELECT stock FROM products WHERE id = ?', ('office365',))
+        new_stock = cursor.fetchone()[0]
+        conn.close()
+        
+        await update.message.reply_text(f"✅ Added {amount} items. Total stock is now {new_stock}.")
+    except Exception as e:
+        await update.message.reply_text("❌ Usage: /addstock <number>")
+
 # --- MAIN RUNNER ---
 def main() -> None:
     init_db()
     application = Application.builder().token(BOT_TOKEN).build()
 
     application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("addstock", addstock))
     application.add_handler(CallbackQueryHandler(button_handler))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
