@@ -132,7 +132,15 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         amount = context.user_data.get('deposit_amount')
         
         if pay_currency == "USDT" and (not network or network == "none"):
-            network = "trc20"
+            keyboard = [
+                [InlineKeyboardButton("TRC20 (Tron)", callback_data="paycoin_USDT_trc20")],
+                [InlineKeyboardButton("BEP20 (BSC)", callback_data="paycoin_USDT_bep20")],
+                [InlineKeyboardButton("ERC20 (Ethereum)", callback_data="paycoin_USDT_erc20")],
+                [InlineKeyboardButton("Polygon", callback_data="paycoin_USDT_polygon")],
+                [InlineKeyboardButton("◀ Cancel", callback_data="main_menu")]
+            ]
+            await query.edit_message_text(f"Amount: ${amount:.2f}\nPlease choose the network for USDT:", reply_markup=InlineKeyboardMarkup(keyboard))
+            return
             
         if not amount:
             await query.edit_message_text("❌ Session expired. Please try again.")
