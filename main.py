@@ -11,7 +11,7 @@ DB_PATH = os.getenv('DB_PATH', 'mongyni.db')
 
 # --- CONFIGURATION ---
 BOT_TOKEN = os.getenv("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
-ADMIN_ID = int(os.getenv("ADMIN_ID", "123456789")) # Put your numeric Telegram ID here
+ADMIN_ID = int(os.getenv("ADMIN_ID", "1477846847")) # Put your numeric Telegram ID here
 MINI_APP_URL = os.getenv("MINI_APP_URL", "https://naady.github.io/mongyni_bot/") # Your GitHub Pages URL
 OXAPAY_MERCHANT_KEY = os.getenv("OXAPAY_MERCHANT_KEY", "YOUR_OXAPAY_MERCHANT_KEY") # Replace with your OxaPay API Key
 
