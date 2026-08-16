@@ -7,6 +7,7 @@ import os
 import time
 import hmac
 import hashlib
+import html as html_lib
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, CallbackQueryHandler, filters
 
@@ -263,6 +264,16 @@ def build_payment_method_page(amount):
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
+    try:
+        await button_handler_inner(update, context, query)
+    except Exception as e:
+        logging.error(f"Unhandled error in button_handler (data={query.data}): {e}")
+        try:
+            await query.message.reply_text("❌ Something went wrong. Please tap /start and try again.")
+        except Exception:
+            pass
+
+async def button_handler_inner(update: Update, context: ContextTypes.DEFAULT_TYPE, query) -> None:
     data = query.data
     user_id = query.from_user.id
 
@@ -309,13 +320,24 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         if items is not None:
             update_user_balance(user_id, -total_price)
             new_balance = get_user_balance(user_id)
+            # Plain text, no HTML formatting — codes are delivered exactly as stored,
+            # since they may contain characters like & or < that are part of the real data.
             delivery_text = "\n".join(items)
-            await query.edit_message_text(
-                f"✅ Purchase successful! {qty}x {info['name']} — ${total_price:.2f} has been deducted.\n\n"
-                f"Your remaining balance: ${new_balance:.2f}\n\n"
-                f"Here are your {info['name']} details:\n<code>{delivery_text}</code>",
-                parse_mode="HTML"
-            )
+            try:
+                await query.edit_message_text(
+                    f"✅ Purchase successful! {qty}x {info['name']} — ${total_price:.2f} has been deducted.\n\n"
+                    f"Your remaining balance: ${new_balance:.2f}\n\n"
+                    f"Here are your {info['name']} details:\n{delivery_text}"
+                )
+            except Exception as e:
+                logging.error(f"Failed to send delivery message: {e}")
+                # Last-resort fallback: send balance/confirmation and the raw codes as a separate message
+                await query.edit_message_text(
+                    f"✅ Purchase successful! {qty}x {info['name']} — ${total_price:.2f} has been deducted.\n\n"
+                    f"Your remaining balance: ${new_balance:.2f}\n\n"
+                    f"⚠️ Couldn't display your codes automatically. Contact support with order details."
+                )
+                logging.error(f"Undelivered codes for user {user_id}, product {product_id}: {items}")
             context.user_data.pop('cur_product', None)
             context.user_data.pop('cur_qty', None)
         else:
@@ -488,16 +510,25 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         create_transaction(track_id, user_id, amount, "pending", "bybit")
         context.user_data['bybit_unique_amount'] = unique_amount
 
+        safe_uid = html_lib.escape(str(BYBIT_UID))
         msg = (f"📬 Send EXACTLY this amount via Bybit 'Send to UID' (internal transfer, no fees):\n\n"
                f"<code>{unique_amount}</code> USDT\n\n"
-               f"To this Bybit UID:\n<code>{BYBIT_UID}</code>\n\n"
+               f"To this Bybit UID:\n<code>{safe_uid}</code>\n\n"
                f"⚠️ The amount must match exactly (including the small decimals) so it can be verified automatically.\n\n"
                f"Once sent, tap the button below.")
         keyboard = [
             [InlineKeyboardButton("✅ I've Sent It — Check Now", callback_data=f"checkbybit_{track_id}")],
             [InlineKeyboardButton("◀ Main Menu", callback_data="main_menu")]
         ]
-        await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
+        try:
+            await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
+        except Exception as e:
+            logging.error(f"Failed to show Bybit payment instructions: {e}")
+            plain_msg = (f"Send EXACTLY this amount via Bybit 'Send to UID':\n\n"
+                         f"{unique_amount} USDT\n\n"
+                         f"To this Bybit UID:\n{BYBIT_UID}\n\n"
+                         f"The amount must match exactly. Once sent, tap the button below.")
+            await query.edit_message_text(plain_msg, reply_markup=InlineKeyboardMarkup(keyboard))
 
     elif data.startswith("checkbybit_"):
         track_id = data.split("_", 1)[1]
