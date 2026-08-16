@@ -4,16 +4,26 @@ import json
 import requests
 import uuid
 import os
+import time
+import hmac
+import hashlib
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, CallbackQueryHandler, filters
 
 DB_PATH = os.getenv('DB_PATH', 'mongyni.db')
+REQUEST_TIMEOUT = 15  # seconds — so a slow payment API can never freeze the whole bot
 
 # --- CONFIGURATION ---
 BOT_TOKEN = os.getenv("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
-ADMIN_ID = int(os.getenv("ADMIN_ID", "123456789")) # Put your numeric Telegram ID here
+ADMIN_ID = int(os.getenv("ADMIN_ID", "1477846847")) # Put your numeric Telegram ID here
 MINI_APP_URL = os.getenv("MINI_APP_URL", "https://naady.github.io/mongyni_bot/") # Your GitHub Pages URL
 OXAPAY_MERCHANT_KEY = os.getenv("OXAPAY_MERCHANT_KEY", "YOUR_OXAPAY_MERCHANT_KEY") # Replace with your OxaPay API Key
+
+# --- BYBIT UID PAYMENTS ---
+BYBIT_API_KEY = os.getenv("BYBIT_API_KEY", "")
+BYBIT_API_SECRET = os.getenv("BYBIT_API_SECRET", "")
+BYBIT_UID = os.getenv("BYBIT_UID", "YOUR_BYBIT_UID_HERE")  # Your Bybit UID that customers transfer to
+BYBIT_API_BASE = "https://api.bybit.com"
 
 # --- PRODUCTS ---
 # To add a new product, just add a new entry here with a unique id (key).
@@ -23,7 +33,7 @@ PRODUCTS = {
         "description": "1TB OneDrive storage + full Office apps, 1 year subscription.",
         "price": 1.30,
     },
-     "hotmail": {
+    "hotmail": {
         "name": "Hotmail Trusted OAuth2 V8 (7-90 Days Aged)",
         "description": """📧 What You Receive
 
@@ -51,7 +61,6 @@ PRODUCTS = {
         "price": 0.018,
     },
 
-
     # Example of a new product — copy this block, edit it, and it will show up automatically:
     # "netflix1m": {
     #     "name": "Netflix Premium 1 Month",
@@ -68,7 +77,7 @@ def init_db():
     cursor = conn.cursor()
     cursor.execute('''CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, balance REAL)''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS inventory (id INTEGER PRIMARY KEY AUTOINCREMENT, product_id TEXT, data TEXT)''')
-    cursor.execute('''CREATE TABLE IF NOT EXISTS transactions (track_id INTEGER PRIMARY KEY, user_id INTEGER, amount REAL, status TEXT)''')
+    cursor.execute('''CREATE TABLE IF NOT EXISTS transactions (track_id INTEGER PRIMARY KEY, user_id INTEGER, amount REAL, status TEXT, method TEXT)''')
     conn.commit()
     conn.close()
 
@@ -123,6 +132,76 @@ def take_inventory_items(product_id, qty):
     conn.close()
     return [row[1] for row in rows]
 
+def create_transaction(track_id, user_id, amount, status, method):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute('INSERT INTO transactions (track_id, user_id, amount, status, method) VALUES (?, ?, ?, ?, ?)',
+                   (track_id, user_id, amount, status, method))
+    conn.commit()
+    conn.close()
+
+def get_transaction(track_id, user_id):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute('SELECT status, amount, method FROM transactions WHERE track_id = ? AND user_id = ?', (track_id, user_id))
+    row = cursor.fetchone()
+    conn.close()
+    return row
+
+def mark_transaction_completed(track_id):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute('UPDATE transactions SET status = ? WHERE track_id = ?', ("completed", track_id))
+    conn.commit()
+    conn.close()
+
+# --- BYBIT API HELPERS ---
+def bybit_signed_get(endpoint, params=None):
+    """Makes a signed GET request to the Bybit V5 API and returns the parsed JSON response."""
+    params = params or {}
+    timestamp = str(int(time.time() * 1000))
+    recv_window = "5000"
+    query_string = "&".join(f"{k}={v}" for k, v in params.items())
+    sign_payload = timestamp + BYBIT_API_KEY + recv_window + query_string
+    signature = hmac.new(BYBIT_API_SECRET.encode(), sign_payload.encode(), hashlib.sha256).hexdigest()
+    headers = {
+        "X-BAPI-API-KEY": BYBIT_API_KEY,
+        "X-BAPI-SIGN": signature,
+        "X-BAPI-TIMESTAMP": timestamp,
+        "X-BAPI-RECV-WINDOW": recv_window,
+    }
+    url = f"{BYBIT_API_BASE}{endpoint}"
+    if query_string:
+        url += f"?{query_string}"
+    response = requests.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
+    return response.json()
+
+def find_matching_bybit_deposit(expected_amount, tolerance=0.000001):
+    """
+    Looks through recent Bybit deposit records for a successful USDT deposit
+    matching the expected (unique) amount. Returns True if found, else False.
+    """
+    try:
+        data = bybit_signed_get("/v5/asset/deposit/query-record", {"coin": "USDT", "limit": "50"})
+    except Exception as e:
+        logging.error(f"Bybit API request error: {e}")
+        return False
+
+    if data.get("retCode") != 0:
+        logging.error(f"Bybit API error: {data.get('retMsg')}")
+        return False
+
+    rows = data.get("result", {}).get("rows", [])
+    for row in rows:
+        try:
+            row_amount = float(row.get("amount", 0))
+        except (TypeError, ValueError):
+            continue
+        status = str(row.get("status"))
+        if status in ("3", "success", "successful") and abs(row_amount - expected_amount) <= tolerance:
+            return True
+    return False
+
 # --- BOT COMMANDS ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
@@ -167,6 +246,15 @@ def build_confirm_page(product_id, qty):
            f"Confirm your purchase?")
     keyboard = [
         [InlineKeyboardButton("✅ Confirm Purchase", callback_data=f"confirm_{product_id}")],
+        [InlineKeyboardButton("◀ Cancel", callback_data="main_menu")],
+    ]
+    return msg, InlineKeyboardMarkup(keyboard)
+
+def build_payment_method_page(amount):
+    msg = f"Amount: ${amount:.2f}\n\nHow would you like to pay?"
+    keyboard = [
+        [InlineKeyboardButton("💠 Pay with Crypto (OxaPay)", callback_data="paymethod_oxapay")],
+        [InlineKeyboardButton("🅱️ Pay via Bybit UID", callback_data="paymethod_bybit")],
         [InlineKeyboardButton("◀ Cancel", callback_data="main_menu")],
     ]
     return msg, InlineKeyboardMarkup(keyboard)
@@ -244,12 +332,49 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         context.user_data['awaiting_amount'] = False
         await start(update, context)
 
+    # --- OxaPay flow ---
+    elif data == "paymethod_oxapay":
+        amount = context.user_data.get('deposit_amount')
+        if not amount:
+            await query.edit_message_text("❌ Session expired. Please try again.")
+            return
+        try:
+            res = requests.post("https://api.oxapay.com/merchants/allowedCoins",
+                                 json={"merchant": OXAPAY_MERCHANT_KEY}, timeout=REQUEST_TIMEOUT)
+            oxa_data = res.json()
+            if oxa_data.get("result") == 100:
+                coins = oxa_data.get("allowed", [])
+                keyboard = []
+                for coin in coins:
+                    if isinstance(coin, dict):
+                        currency = coin.get("currency")
+                        network = coin.get("network")
+                        name = coin.get("name", currency)
+                        btn_text = f"{name} ({network})" if network else name
+                        cb_data = f"paycoin_{currency}_{network}" if network else f"paycoin_{currency}_none"
+                    else:
+                        btn_text = str(coin)
+                        cb_data = f"paycoin_{coin}_none"
+                    keyboard.append([InlineKeyboardButton(btn_text, callback_data=cb_data)])
+
+                if not keyboard:
+                    await query.edit_message_text("❌ No payment methods configured. Please check your OxaPay merchant settings.")
+                    return
+
+                keyboard.append([InlineKeyboardButton("◀ Cancel", callback_data="main_menu")])
+                await query.edit_message_text(f"Amount: ${amount:.2f}\nChoose your payment method:", reply_markup=InlineKeyboardMarkup(keyboard))
+            else:
+                await query.edit_message_text(f"❌ Error fetching payment methods: {oxa_data.get('message')}")
+        except Exception as e:
+            logging.error(f"OxaPay API Error: {e}")
+            await query.edit_message_text("❌ Error connecting to payment provider. Please try again in a moment.")
+
     elif data.startswith("paycoin_"):
         parts = data.split("_", 2)
         pay_currency = parts[1]
         network = parts[2] if len(parts) > 2 else None
         amount = context.user_data.get('deposit_amount')
-        
+
         if pay_currency == "USDT" and (not network or network == "none"):
             keyboard = [
                 [InlineKeyboardButton("TRC20 (Tron)", callback_data="paycoin_USDT_trc20")],
@@ -260,16 +385,16 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             ]
             await query.edit_message_text(f"Amount: ${amount:.2f}\nPlease choose the network for USDT:", reply_markup=InlineKeyboardMarkup(keyboard))
             return
-            
+
         if not amount:
             await query.edit_message_text("❌ Session expired. Please try again.")
             return
-            
+
         order_id = str(uuid.uuid4())
-        
+
         # Add 0.04 fixed fee to the invoice amount
         invoice_amount = amount + 0.04
-        
+
         payload = {
             "merchant": OXAPAY_MERCHANT_KEY,
             "amount": invoice_amount,
@@ -280,25 +405,21 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         }
         if network and network != "none":
             payload["network"] = network
-            
+
         try:
-            response = requests.post("https://api.oxapay.com/merchants/request/whitelabel", json=payload)
+            response = requests.post("https://api.oxapay.com/merchants/request/whitelabel", json=payload, timeout=REQUEST_TIMEOUT)
             res_data = response.json()
             if res_data.get("result") == 100:
                 address = res_data.get("address")
                 pay_amount = res_data.get("payAmount")
                 track_id = res_data.get("trackId")
-                
-                conn = sqlite3.connect(DB_PATH)
-                cursor = conn.cursor()
-                cursor.execute('INSERT INTO transactions (track_id, user_id, amount, status) VALUES (?, ?, ?, ?)', (track_id, user_id, amount, "pending"))
-                conn.commit()
-                conn.close()
-                
+
+                create_transaction(track_id, user_id, amount, "pending", "oxapay")
+
                 msg = (f"⚠️ Please send EXACTLY this amount:\n<code>{pay_amount}</code> {pay_currency}\n\n"
                        f"📬 To this {network.upper()} address (Tap to copy):\n<code>{address}</code>\n\n"
                        f"Once you have sent the funds, click the button below to check your payment status.")
-                       
+
                 keyboard = [
                     [InlineKeyboardButton("Check Payment Status", callback_data=f"checkpay_{track_id}")],
                     [InlineKeyboardButton("◀ Main Menu", callback_data="main_menu")]
@@ -308,38 +429,37 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 await query.edit_message_text(f"❌ Error generating address: {res_data.get('message')}\nDetails: {json.dumps(res_data)}")
         except Exception as e:
             logging.error(f"OxaPay API Error: {e}")
-            await query.edit_message_text("❌ Error connecting to payment provider.")
+            await query.edit_message_text("❌ Error connecting to payment provider. Please try again in a moment.")
 
     elif data.startswith("checkpay_"):
         track_id = data.split("_")[1]
-        
+
         payload = {
             "merchant": OXAPAY_MERCHANT_KEY,
             "trackId": int(track_id)
         }
         try:
-            response = requests.post("https://api.oxapay.com/merchants/inquiry", json=payload)
+            response = requests.post("https://api.oxapay.com/merchants/inquiry", json=payload, timeout=REQUEST_TIMEOUT)
             res_data = response.json()
             status = res_data.get("status")
-            
-            conn = sqlite3.connect(DB_PATH)
-            cursor = conn.cursor()
-            cursor.execute('SELECT status, amount FROM transactions WHERE track_id = ? AND user_id = ?', (track_id, user_id))
-            txn = cursor.fetchone()
-            
+
+            txn = get_transaction(track_id, user_id)
+
             if txn:
-                db_status, amount = txn
+                db_status, amount, method = txn
                 if db_status == "completed":
                     await query.edit_message_text(f"✅ This payment of ${amount} has already been credited to your account.")
                 elif status.lower() == "paid":
-                    cursor.execute('UPDATE transactions SET status = ? WHERE track_id = ?', ("completed", track_id))
-                    conn.commit()
+                    mark_transaction_completed(track_id)
                     update_user_balance(user_id, amount)
                     new_balance = get_user_balance(user_id)
                     await query.edit_message_text(f"✅ Payment successful! ${amount} added. New balance: ${new_balance:.2f}")
                 elif status.lower() == "expired":
+                    conn = sqlite3.connect(DB_PATH)
+                    cursor = conn.cursor()
                     cursor.execute('UPDATE transactions SET status = ? WHERE track_id = ?', ("expired", track_id))
                     conn.commit()
+                    conn.close()
                     await query.edit_message_text("❌ This payment link has expired. Please request a new one.")
                 else:
                     keyboard = [
@@ -349,10 +469,74 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                     await query.edit_message_text(f"⏳ Payment is still pending (Status: {status}).\nRaw details: {json.dumps(res_data)}", reply_markup=InlineKeyboardMarkup(keyboard))
             else:
                 await query.edit_message_text("❌ Transaction not found.")
-            conn.close()
         except Exception as e:
             logging.error(f"OxaPay Check Error: {e}")
             await query.answer("❌ Error checking payment status.", show_alert=True)
+
+    # --- Bybit UID flow ---
+    elif data == "paymethod_bybit":
+        amount = context.user_data.get('deposit_amount')
+        if not amount:
+            await query.edit_message_text("❌ Session expired. Please try again.")
+            return
+
+        # Add a tiny unique fraction of a cent so we can match this exact deposit automatically
+        track_id = int(uuid.uuid4().int % 10_000_000_000)
+        unique_suffix = (track_id % 999) / 100000  # up to +0.00999
+        unique_amount = round(amount + unique_suffix, 5)
+
+        create_transaction(track_id, user_id, amount, "pending", "bybit")
+        context.user_data['bybit_unique_amount'] = unique_amount
+
+        msg = (f"📬 Send EXACTLY this amount via Bybit 'Send to UID' (internal transfer, no fees):\n\n"
+               f"<code>{unique_amount}</code> USDT\n\n"
+               f"To this Bybit UID:\n<code>{BYBIT_UID}</code>\n\n"
+               f"⚠️ The amount must match exactly (including the small decimals) so it can be verified automatically.\n\n"
+               f"Once sent, tap the button below.")
+        keyboard = [
+            [InlineKeyboardButton("✅ I've Sent It — Check Now", callback_data=f"checkbybit_{track_id}")],
+            [InlineKeyboardButton("◀ Main Menu", callback_data="main_menu")]
+        ]
+        await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
+
+    elif data.startswith("checkbybit_"):
+        track_id = data.split("_", 1)[1]
+        txn = get_transaction(track_id, user_id)
+
+        if not txn:
+            await query.answer("❌ Transaction not found.", show_alert=True)
+            return
+
+        db_status, amount, method = txn
+        if db_status == "completed":
+            await query.edit_message_text(f"✅ This payment of ${amount} has already been credited to your account.")
+            return
+
+        unique_amount = context.user_data.get('bybit_unique_amount')
+        if not unique_amount:
+            await query.answer("❌ Session expired. Please start a new Bybit deposit.", show_alert=True)
+            return
+
+        if not BYBIT_API_KEY or not BYBIT_API_SECRET:
+            await query.answer("❌ Bybit payments aren't configured yet.", show_alert=True)
+            return
+
+        found = find_matching_bybit_deposit(unique_amount)
+        if found:
+            mark_transaction_completed(track_id)
+            update_user_balance(user_id, amount)
+            new_balance = get_user_balance(user_id)
+            await query.edit_message_text(f"✅ Payment successful! ${amount} added. New balance: ${new_balance:.2f}")
+        else:
+            keyboard = [
+                [InlineKeyboardButton("✅ I've Sent It — Check Now", callback_data=f"checkbybit_{track_id}")],
+                [InlineKeyboardButton("◀ Main Menu", callback_data="main_menu")]
+            ]
+            await query.edit_message_text(
+                f"⏳ We haven't seen that deposit yet. Bybit transfers are usually instant — "
+                f"double check the amount was exact ({unique_amount} USDT) and try again in a minute.",
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if context.user_data.get('awaiting_quantity'):
@@ -395,36 +579,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
         context.user_data['awaiting_amount'] = False
         context.user_data['deposit_amount'] = amount
-        
-        try:
-            res = requests.post("https://api.oxapay.com/merchants/allowedCoins", json={"merchant": OXAPAY_MERCHANT_KEY})
-            data = res.json()
-            if data.get("result") == 100:
-                coins = data.get("allowed", [])
-                keyboard = []
-                for coin in coins:
-                    if isinstance(coin, dict):
-                        currency = coin.get("currency")
-                        network = coin.get("network")
-                        name = coin.get("name", currency)
-                        btn_text = f"{name} ({network})" if network else name
-                        cb_data = f"paycoin_{currency}_{network}" if network else f"paycoin_{currency}_none"
-                    else:
-                        btn_text = str(coin)
-                        cb_data = f"paycoin_{coin}_none"
-                    keyboard.append([InlineKeyboardButton(btn_text, callback_data=cb_data)])
-                
-                if not keyboard:
-                    await update.message.reply_text("❌ No payment methods configured. Please check your OxaPay merchant settings.")
-                    return
-                    
-                keyboard.append([InlineKeyboardButton("◀ Cancel", callback_data="main_menu")])
-                await update.message.reply_text(f"Amount: ${amount:.2f}\nChoose your payment method:", reply_markup=InlineKeyboardMarkup(keyboard))
-            else:
-                await update.message.reply_text(f"❌ Error fetching payment methods: {data.get('message')}")
-        except Exception as e:
-            logging.error(f"OxaPay API Error: {e}")
-            await update.message.reply_text("❌ Error connecting to payment provider.")
+
+        msg, markup = build_payment_method_page(amount)
+        await update.message.reply_text(msg, reply_markup=markup)
+        return
 
 async def addstock(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message.from_user.id != ADMIN_ID:
