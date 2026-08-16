@@ -135,24 +135,30 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     else:
         await update.message.reply_text(msg, reply_markup=reply_markup)
 
-def build_product_page(product_id, qty):
+def build_product_intro(product_id):
     info = PRODUCTS[product_id]
     stock = get_product_stock(product_id)
-    total = info["price"] * qty
     msg = (f"📦 {info['name']}\n\n"
            f"{info['description']}\n\n"
            f"Price: ${info['price']:.2f} each\n"
            f"In stock: {stock}\n\n"
-           f"Quantity: {qty}\n"
-           f"Total: ${total:.2f}")
+           f"✏️ How many do you want? Please type a number.")
     keyboard = [
-        [
-            InlineKeyboardButton("➖", callback_data=f"qty_dec_{product_id}"),
-            InlineKeyboardButton(f"{qty}", callback_data="noop"),
-            InlineKeyboardButton("➕", callback_data=f"qty_inc_{product_id}"),
-        ],
+        [InlineKeyboardButton("◀ Cancel", callback_data="main_menu")],
+    ]
+    return msg, InlineKeyboardMarkup(keyboard)
+
+def build_confirm_page(product_id, qty):
+    info = PRODUCTS[product_id]
+    total = info["price"] * qty
+    msg = (f"📦 {info['name']}\n\n"
+           f"Quantity: {qty}\n"
+           f"Price: ${info['price']:.2f} each\n"
+           f"Total: ${total:.2f}\n\n"
+           f"Confirm your purchase?")
+    keyboard = [
         [InlineKeyboardButton("✅ Confirm Purchase", callback_data=f"confirm_{product_id}")],
-        [InlineKeyboardButton("◀ Back", callback_data="main_menu")],
+        [InlineKeyboardButton("◀ Cancel", callback_data="main_menu")],
     ]
     return msg, InlineKeyboardMarkup(keyboard)
 
@@ -164,6 +170,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     user_id = query.from_user.id
 
     if data == "main_menu":
+        context.user_data['awaiting_quantity'] = False
         await start(update, context)
 
     elif data == "noop":
@@ -174,27 +181,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         if product_id not in PRODUCTS:
             await query.answer("❌ Product not found.", show_alert=True)
             return
-        context.user_data['cur_product'] = product_id
-        context.user_data['cur_qty'] = 1
-        msg, markup = build_product_page(product_id, 1)
-        await query.edit_message_text(msg, reply_markup=markup)
-
-    elif data.startswith("qty_dec_") or data.startswith("qty_inc_"):
-        product_id = data.split("_", 2)[2]
-        if context.user_data.get('cur_product') != product_id:
-            await query.answer("❌ Session expired, please reopen the product.", show_alert=True)
-            return
-        qty = context.user_data.get('cur_qty', 1)
         stock = get_product_stock(product_id)
-        if data.startswith("qty_dec_"):
-            qty = max(1, qty - 1)
-        else:
-            qty = qty + 1
-            if stock > 0 and qty > stock:
-                qty = stock
-                await query.answer("❌ That's the maximum available stock.", show_alert=False)
-        context.user_data['cur_qty'] = qty
-        msg, markup = build_product_page(product_id, qty)
+        if stock <= 0:
+            await query.answer("❌ Sorry, this product is currently out of stock.", show_alert=True)
+            return
+        context.user_data['cur_product'] = product_id
+        context.user_data['awaiting_quantity'] = True
+        msg, markup = build_product_intro(product_id)
         await query.edit_message_text(msg, reply_markup=markup)
 
     elif data.startswith("confirm_"):
@@ -350,6 +343,34 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await query.answer("❌ Error checking payment status.", show_alert=True)
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if context.user_data.get('awaiting_quantity'):
+        product_id = context.user_data.get('cur_product')
+        info = PRODUCTS.get(product_id)
+        if not info:
+            context.user_data['awaiting_quantity'] = False
+            await update.message.reply_text("❌ Session expired. Please tap /start and pick the product again.")
+            return
+
+        text = update.message.text.strip()
+        try:
+            qty = int(text)
+            if qty <= 0:
+                raise ValueError
+        except ValueError:
+            await update.message.reply_text("❌ Please type a valid whole number greater than 0.")
+            return
+
+        stock = get_product_stock(product_id)
+        if qty > stock:
+            await update.message.reply_text(f"❌ Only {stock} left in stock. Please type a smaller number.")
+            return
+
+        context.user_data['awaiting_quantity'] = False
+        context.user_data['cur_qty'] = qty
+        msg, markup = build_confirm_page(product_id, qty)
+        await update.message.reply_text(msg, reply_markup=markup)
+        return
+
     if context.user_data.get('awaiting_amount'):
         text = update.message.text
         try:
