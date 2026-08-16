@@ -435,10 +435,14 @@ async def addstock(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     if len(first_line_parts) < 2:
         await update.message.reply_text(
-            "❌ Usage: send a message like this (command on the first line, one code per line after it):\n\n"
+            "❌ Usage:\n"
+            "/addstock <product_id>\n\n"
+            "Then either:\n"
+            "• Type the codes as extra lines in the same message, one per line, e.g.:\n"
             "/addstock hotmail\n"
             "mail1@hotmail.com|pass123|token1\n"
-            "mail2@hotmail.com|pass456|token2"
+            "mail2@hotmail.com|pass456|token2\n\n"
+            "• OR just send /addstock <product_id> alone, then upload a .txt file (one code per line) as your next message."
         )
         return
 
@@ -448,13 +452,47 @@ async def addstock(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     codes = [line.strip() for line in lines[1:] if line.strip()]
+
     if not codes:
-        await update.message.reply_text("❌ No codes found. Put each code/account on its own line, right after the /addstock line.")
+        # No codes typed in the message — wait for a .txt file upload instead
+        context.user_data['awaiting_stock_file'] = product_id
+        await update.message.reply_text(
+            f"📎 Okay, now send me a .txt file for '{product_id}' — one code/account per line."
+        )
         return
 
     add_inventory_items(product_id, codes)
     new_stock = get_product_stock(product_id)
     await update.message.reply_text(f"✅ Added {len(codes)} items to '{product_id}'. Total stock is now {new_stock}.")
+
+async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message.from_user.id != ADMIN_ID:
+        return
+
+    product_id = context.user_data.get('awaiting_stock_file')
+    if not product_id:
+        await update.message.reply_text("❌ Send /addstock <product_id> first, then upload the file.")
+        return
+
+    document = update.message.document
+    try:
+        file = await document.get_file()
+        file_bytes = await file.download_as_bytearray()
+        text = file_bytes.decode('utf-8')
+    except Exception as e:
+        logging.error(f"File download/decode error: {e}")
+        await update.message.reply_text("❌ Couldn't read that file. Please make sure it's a plain .txt file and try again.")
+        return
+
+    codes = [line.strip() for line in text.split("\n") if line.strip()]
+    if not codes:
+        await update.message.reply_text("❌ The file looks empty. Please put one code/account per line.")
+        return
+
+    add_inventory_items(product_id, codes)
+    new_stock = get_product_stock(product_id)
+    context.user_data['awaiting_stock_file'] = None
+    await update.message.reply_text(f"✅ Added {len(codes)} items to '{product_id}' from the file. Total stock is now {new_stock}.")
 
 # --- MAIN RUNNER ---
 def main() -> None:
@@ -464,6 +502,7 @@ def main() -> None:
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("addstock", addstock))
     application.add_handler(CallbackQueryHandler(button_handler))
+    application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
     print("Mongyni Bot is running...")
