@@ -23,6 +23,38 @@ PRODUCTS = {
         "description": "1TB OneDrive storage + full Office apps, 1 year subscription.",
         "price": 1.30,
     },
+    "hotmail": {
+    "name": "Hotmail Trusted Oauth2 V8 (7-
+90 Days Aged",
+    "description": "📧 What You Receive
+
+* ✅ Hotmail Trusted OAuth2 V8 account
+* ✅ Account age: 7–90 Days
+* ✅ Format: mail | password | refreshtoken
+* ✅ Instant delivery
+* ✅ FREE delivery 24/7
+* ✅ Fast & easy access
+* ✅ Details delivered automatically after purchase
+
+🛠️ How to Use
+
+1. Go to:
+    https://aquamarine-pie-24ef2f.netlify.app/
+2. Paste the information you received from the bot.
+3. Click on the email.
+4. Follow the instructions to access the account.
+
+⚡ Why Buy From Us?
+
+* 🚀 Instant delivery
+* 🕐 Available 24/7
+* 🎁 Free delivery
+* ⚡ Fast service
+* 🔑 OAuth2 V8 format
+* 📅 7–90 Days Aged accounts",
+    "price": 0.018,
+},
+
     # Example of a new product — copy this block, edit it, and it will show up automatically:
     # "netflix1m": {
     #     "name": "Netflix Premium 1 Month",
