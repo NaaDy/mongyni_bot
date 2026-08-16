@@ -67,11 +67,8 @@ def init_db():
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute('''CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, balance REAL)''')
-    cursor.execute('''CREATE TABLE IF NOT EXISTS products (id TEXT PRIMARY KEY, stock INTEGER)''')
+    cursor.execute('''CREATE TABLE IF NOT EXISTS inventory (id INTEGER PRIMARY KEY AUTOINCREMENT, product_id TEXT, data TEXT)''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS transactions (track_id INTEGER PRIMARY KEY, user_id INTEGER, amount REAL, status TEXT)''')
-    # Make sure every product defined above has a row in the DB (default stock 0, use /addstock to add stock)
-    for product_id in PRODUCTS:
-        cursor.execute('INSERT OR IGNORE INTO products (id, stock) VALUES (?, ?)', (product_id, 0))
     conn.commit()
     conn.close()
 
@@ -99,20 +96,32 @@ def update_user_balance(user_id, amount_change):
 def get_product_stock(product_id):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    cursor.execute('SELECT stock FROM products WHERE id = ?', (product_id,))
-    result = cursor.fetchone()
-    stock = result[0] if result else 0
+    cursor.execute('SELECT COUNT(*) FROM inventory WHERE product_id = ?', (product_id,))
+    stock = cursor.fetchone()[0]
     conn.close()
     return stock
 
-def reduce_product_stock(product_id, qty=1):
+def add_inventory_items(product_id, items):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    cursor.execute('UPDATE products SET stock = stock - ? WHERE id = ? AND stock >= ?', (qty, product_id, qty))
-    success = cursor.rowcount > 0
+    cursor.executemany('INSERT INTO inventory (product_id, data) VALUES (?, ?)', [(product_id, item) for item in items])
     conn.commit()
     conn.close()
-    return success
+
+def take_inventory_items(product_id, qty):
+    """Removes and returns up to qty items for a product. Returns None if not enough stock."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute('SELECT id, data FROM inventory WHERE product_id = ? ORDER BY id LIMIT ?', (product_id, qty))
+    rows = cursor.fetchall()
+    if len(rows) < qty:
+        conn.close()
+        return None
+    ids = [row[0] for row in rows]
+    cursor.executemany('DELETE FROM inventory WHERE id = ?', [(i,) for i in ids])
+    conn.commit()
+    conn.close()
+    return [row[1] for row in rows]
 
 # --- BOT COMMANDS ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -208,13 +217,16 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await query.answer(f"❌ Insufficient funds. You need ${total_price:.2f}.", show_alert=True)
             return
 
-        if reduce_product_stock(product_id, qty):
+        items = take_inventory_items(product_id, qty)
+        if items is not None:
             update_user_balance(user_id, -total_price)
             new_balance = get_user_balance(user_id)
+            delivery_text = "\n".join(items)
             await query.edit_message_text(
                 f"✅ Purchase successful! {qty}x {info['name']} — ${total_price:.2f} has been deducted.\n\n"
                 f"Your remaining balance: ${new_balance:.2f}\n\n"
-                f"Here are your {info['name']} details:\n[Product credentials would go here]"
+                f"Here are your {info['name']} details:\n<code>{delivery_text}</code>",
+                parse_mode="HTML"
             )
             context.user_data.pop('cur_product', None)
             context.user_data.pop('cur_qty', None)
@@ -418,26 +430,31 @@ async def addstock(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message.from_user.id != ADMIN_ID:
         return
 
-    try:
-        product_id = context.args[0]
-        amount = int(context.args[1])
+    lines = update.message.text.split("\n")
+    first_line_parts = lines[0].strip().split()
 
-        if product_id not in PRODUCTS:
-            await update.message.reply_text(f"❌ Unknown product id '{product_id}'. Available: {', '.join(PRODUCTS.keys())}")
-            return
+    if len(first_line_parts) < 2:
+        await update.message.reply_text(
+            "❌ Usage: send a message like this (command on the first line, one code per line after it):\n\n"
+            "/addstock hotmail\n"
+            "mail1@hotmail.com|pass123|token1\n"
+            "mail2@hotmail.com|pass456|token2"
+        )
+        return
 
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        cursor.execute('UPDATE products SET stock = stock + ? WHERE id = ?', (amount, product_id))
-        conn.commit()
-        
-        cursor.execute('SELECT stock FROM products WHERE id = ?', (product_id,))
-        new_stock = cursor.fetchone()[0]
-        conn.close()
-        
-        await update.message.reply_text(f"✅ Added {amount} items to '{product_id}'. Total stock is now {new_stock}.")
-    except (IndexError, ValueError):
-        await update.message.reply_text("❌ Usage: /addstock <product_id> <number>")
+    product_id = first_line_parts[1]
+    if product_id not in PRODUCTS:
+        await update.message.reply_text(f"❌ Unknown product id '{product_id}'. Available: {', '.join(PRODUCTS.keys())}")
+        return
+
+    codes = [line.strip() for line in lines[1:] if line.strip()]
+    if not codes:
+        await update.message.reply_text("❌ No codes found. Put each code/account on its own line, right after the /addstock line.")
+        return
+
+    add_inventory_items(product_id, codes)
+    new_stock = get_product_stock(product_id)
+    await update.message.reply_text(f"✅ Added {len(codes)} items to '{product_id}'. Total stock is now {new_stock}.")
 
 # --- MAIN RUNNER ---
 def main() -> None:
