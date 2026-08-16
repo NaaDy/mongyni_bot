@@ -14,7 +14,22 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "123456789")) # Put your numeric Telegram ID here
 MINI_APP_URL = os.getenv("MINI_APP_URL", "https://naady.github.io/mongyni_bot/") # Your GitHub Pages URL
 OXAPAY_MERCHANT_KEY = os.getenv("OXAPAY_MERCHANT_KEY", "YOUR_OXAPAY_MERCHANT_KEY") # Replace with your OxaPay API Key
-PRODUCT_PRICE = 1.30
+
+# --- PRODUCTS ---
+# To add a new product, just add a new entry here with a unique id (key).
+PRODUCTS = {
+    "office365": {
+        "name": "Office 365 1TB",
+        "description": "1TB OneDrive storage + full Office apps, 1 year subscription.",
+        "price": 1.30,
+    },
+    # Example of a new product — copy this block, edit it, and it will show up automatically:
+    # "netflix1m": {
+    #     "name": "Netflix Premium 1 Month",
+    #     "description": "Netflix Premium account, 1 month, Full HD/4K.",
+    #     "price": 2.50,
+    # },
+}
 
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 
@@ -25,8 +40,9 @@ def init_db():
     cursor.execute('''CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, balance REAL)''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS products (id TEXT PRIMARY KEY, stock INTEGER)''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS transactions (track_id INTEGER PRIMARY KEY, user_id INTEGER, amount REAL, status TEXT)''')
-    # Insert default product if not exists
-    cursor.execute('INSERT OR IGNORE INTO products (id, stock) VALUES (?, ?)', ('office365', 100))
+    # Make sure every product defined above has a row in the DB (default stock 0, use /addstock to add stock)
+    for product_id in PRODUCTS:
+        cursor.execute('INSERT OR IGNORE INTO products (id, stock) VALUES (?, ?)', (product_id, 0))
     conn.commit()
     conn.close()
 
@@ -51,7 +67,7 @@ def update_user_balance(user_id, amount_change):
     conn.commit()
     conn.close()
 
-def get_product_stock(product_id='office365'):
+def get_product_stock(product_id):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute('SELECT stock FROM products WHERE id = ?', (product_id,))
@@ -60,10 +76,10 @@ def get_product_stock(product_id='office365'):
     conn.close()
     return stock
 
-def reduce_product_stock(product_id='office365'):
+def reduce_product_stock(product_id, qty=1):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    cursor.execute('UPDATE products SET stock = stock - 1 WHERE id = ? AND stock > 0', (product_id,))
+    cursor.execute('UPDATE products SET stock = stock - ? WHERE id = ? AND stock >= ?', (qty, product_id, qty))
     success = cursor.rowcount > 0
     conn.commit()
     conn.close()
@@ -73,22 +89,43 @@ def reduce_product_stock(product_id='office365'):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     balance = get_user_balance(user_id)
-    stock = get_product_stock()
 
-    icon = "🔴" if stock == 0 else ("🔴" if stock < 10 else ("🟠" if stock <= 50 else "🟢"))
-    btn_text = f"{icon} Office 365 1TB - $1.30 (Stock: {stock})"
-    
-    keyboard = [
-        [InlineKeyboardButton(btn_text, callback_data="buy_office365")],
-        [InlineKeyboardButton("💳 Add Funds", callback_data="menu_addfunds")]
-    ]
+    keyboard = []
+    for product_id, info in PRODUCTS.items():
+        stock = get_product_stock(product_id)
+        icon = "🔴" if stock == 0 else ("🔴" if stock < 10 else ("🟠" if stock <= 50 else "🟢"))
+        btn_text = f"{icon} {info['name']} - ${info['price']:.2f} (Stock: {stock})"
+        keyboard.append([InlineKeyboardButton(btn_text, callback_data=f"prod_{product_id}")])
+
+    keyboard.append([InlineKeyboardButton("💳 Add Funds", callback_data="menu_addfunds")])
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    msg = f"Welcome to Mongyni Store!\n\nYour ID: {user_id}\nYour Balance: ${balance:.2f}\n\nPlease select an option below:"
+    msg = f"Welcome to Mongyni Store!\n\nYour ID: {user_id}\nYour Balance: ${balance:.2f}\n\nPlease select a product below:"
     if update.callback_query:
         await update.callback_query.edit_message_text(msg, reply_markup=reply_markup)
     else:
         await update.message.reply_text(msg, reply_markup=reply_markup)
+
+def build_product_page(product_id, qty):
+    info = PRODUCTS[product_id]
+    stock = get_product_stock(product_id)
+    total = info["price"] * qty
+    msg = (f"📦 {info['name']}\n\n"
+           f"{info['description']}\n\n"
+           f"Price: ${info['price']:.2f} each\n"
+           f"In stock: {stock}\n\n"
+           f"Quantity: {qty}\n"
+           f"Total: ${total:.2f}")
+    keyboard = [
+        [
+            InlineKeyboardButton("➖", callback_data=f"qty_dec_{product_id}"),
+            InlineKeyboardButton(f"{qty}", callback_data="noop"),
+            InlineKeyboardButton("➕", callback_data=f"qty_inc_{product_id}"),
+        ],
+        [InlineKeyboardButton("✅ Confirm Purchase", callback_data=f"confirm_{product_id}")],
+        [InlineKeyboardButton("◀ Back", callback_data="main_menu")],
+    ]
+    return msg, InlineKeyboardMarkup(keyboard)
 
 # --- HANDLE INLINE BUTTONS ---
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -100,20 +137,68 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if data == "main_menu":
         await start(update, context)
 
-    elif data == "buy_office365":
-        balance = get_user_balance(user_id)
-        if balance >= PRODUCT_PRICE:
-            if reduce_product_stock():
-                update_user_balance(user_id, -PRODUCT_PRICE)
-                new_balance = get_user_balance(user_id)
-                await query.edit_message_text(f"✅ Purchase successful! $1.30 has been deducted.\n\nYour remaining balance: ${new_balance:.2f}\n\nHere are your Office 365 1TB details:\n[Product credentials would go here]")
-            else:
-                await query.answer("❌ Sorry, this product is currently out of stock.", show_alert=True)
-                await start(update, context)
+    elif data == "noop":
+        return
+
+    elif data.startswith("prod_"):
+        product_id = data.split("_", 1)[1]
+        if product_id not in PRODUCTS:
+            await query.answer("❌ Product not found.", show_alert=True)
+            return
+        context.user_data['cur_product'] = product_id
+        context.user_data['cur_qty'] = 1
+        msg, markup = build_product_page(product_id, 1)
+        await query.edit_message_text(msg, reply_markup=markup)
+
+    elif data.startswith("qty_dec_") or data.startswith("qty_inc_"):
+        product_id = data.split("_", 2)[2]
+        if context.user_data.get('cur_product') != product_id:
+            await query.answer("❌ Session expired, please reopen the product.", show_alert=True)
+            return
+        qty = context.user_data.get('cur_qty', 1)
+        stock = get_product_stock(product_id)
+        if data.startswith("qty_dec_"):
+            qty = max(1, qty - 1)
         else:
-            await query.answer(f"❌ Insufficient funds. You need ${PRODUCT_PRICE:.2f}.", show_alert=True)
-            await start(update, context)
-            
+            qty = qty + 1
+            if stock > 0 and qty > stock:
+                qty = stock
+                await query.answer("❌ That's the maximum available stock.", show_alert=False)
+        context.user_data['cur_qty'] = qty
+        msg, markup = build_product_page(product_id, qty)
+        await query.edit_message_text(msg, reply_markup=markup)
+
+    elif data.startswith("confirm_"):
+        product_id = data.split("_", 1)[1]
+        if context.user_data.get('cur_product') != product_id:
+            await query.answer("❌ Session expired, please reopen the product.", show_alert=True)
+            return
+        qty = context.user_data.get('cur_qty', 1)
+        info = PRODUCTS.get(product_id)
+        if not info:
+            await query.answer("❌ Product not found.", show_alert=True)
+            return
+
+        total_price = info["price"] * qty
+        balance = get_user_balance(user_id)
+
+        if balance < total_price:
+            await query.answer(f"❌ Insufficient funds. You need ${total_price:.2f}.", show_alert=True)
+            return
+
+        if reduce_product_stock(product_id, qty):
+            update_user_balance(user_id, -total_price)
+            new_balance = get_user_balance(user_id)
+            await query.edit_message_text(
+                f"✅ Purchase successful! {qty}x {info['name']} — ${total_price:.2f} has been deducted.\n\n"
+                f"Your remaining balance: ${new_balance:.2f}\n\n"
+                f"Here are your {info['name']} details:\n[Product credentials would go here]"
+            )
+            context.user_data.pop('cur_product', None)
+            context.user_data.pop('cur_qty', None)
+        else:
+            await query.answer("❌ Sorry, not enough stock for that quantity.", show_alert=True)
+
     elif data == "menu_addfunds":
         context.user_data['awaiting_amount'] = True
         keyboard = [
@@ -282,21 +367,27 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 async def addstock(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message.from_user.id != ADMIN_ID:
         return
-    
+
     try:
-        amount = int(context.args[0])
+        product_id = context.args[0]
+        amount = int(context.args[1])
+
+        if product_id not in PRODUCTS:
+            await update.message.reply_text(f"❌ Unknown product id '{product_id}'. Available: {', '.join(PRODUCTS.keys())}")
+            return
+
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
-        cursor.execute('UPDATE products SET stock = stock + ? WHERE id = ?', (amount, 'office365'))
+        cursor.execute('UPDATE products SET stock = stock + ? WHERE id = ?', (amount, product_id))
         conn.commit()
         
-        cursor.execute('SELECT stock FROM products WHERE id = ?', ('office365',))
+        cursor.execute('SELECT stock FROM products WHERE id = ?', (product_id,))
         new_stock = cursor.fetchone()[0]
         conn.close()
         
-        await update.message.reply_text(f"✅ Added {amount} items. Total stock is now {new_stock}.")
-    except Exception as e:
-        await update.message.reply_text("❌ Usage: /addstock <number>")
+        await update.message.reply_text(f"✅ Added {amount} items to '{product_id}'. Total stock is now {new_stock}.")
+    except (IndexError, ValueError):
+        await update.message.reply_text("❌ Usage: /addstock <product_id> <number>")
 
 # --- MAIN RUNNER ---
 def main() -> None:
