@@ -8,8 +8,11 @@ import time
 import hmac
 import hashlib
 import html as html_lib
+from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, CallbackQueryHandler, filters
+
+load_dotenv()
 
 DB_PATH = os.getenv('DB_PATH', 'mongyni.db')
 REQUEST_TIMEOUT = 15  # seconds — so a slow payment API can never freeze the whole bot
@@ -360,6 +363,44 @@ async def button_handler_inner(update: Update, context: ContextTypes.DEFAULT_TYP
         if not amount:
             await query.edit_message_text("❌ Session expired. Please try again.")
             return
+
+        order_id = str(uuid.uuid4())
+        invoice_amount = amount + 0.04
+        payload = {
+            "merchant": OXAPAY_MERCHANT_KEY,
+            "amount": invoice_amount,
+            "currency": "USD",
+            "lifeTime": 60,
+            "feePaidByPayer": 1,
+            "orderId": order_id,
+            "description": f"Add funds for User {user_id}"
+        }
+
+        try:
+            res = requests.post("https://api.oxapay.com/merchants/request", json=payload, timeout=REQUEST_TIMEOUT)
+            res_data = res.json()
+            if res_data.get("result") == 100:
+                pay_link = res_data.get("payLink")
+                track_id = res_data.get("trackId")
+                create_transaction(track_id, user_id, amount, "pending", "oxapay")
+
+                keyboard = [
+                    [InlineKeyboardButton("💳 Pay via OxaPay Invoice", url=pay_link)],
+                    [InlineKeyboardButton("Check Payment Status", callback_data=f"checkpay_{track_id}")],
+                    [InlineKeyboardButton("◀ Main Menu", callback_data="main_menu")]
+                ]
+                msg = (f"💳 <b>OxaPay Payment Invoice</b>\n\n"
+                       f"Amount: <b>${amount:.2f} USD</b>\n"
+                       f"Total Invoice (inc. fee): <b>${invoice_amount:.2f} USD</b>\n\n"
+                       f"Tap the button below to complete your payment on OxaPay:")
+                await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
+                return
+            else:
+                logging.warning(f"OxaPay link creation warning ({res_data.get('message')}), trying direct coin options...")
+        except Exception as e:
+            logging.error(f"OxaPay link creation API Error: {e}")
+
+        # Fallback: Attempt whitelabel coins selection if standard request wasn't successful
         try:
             res = requests.post("https://api.oxapay.com/merchants/allowedCoins",
                                  json={"merchant": OXAPAY_MERCHANT_KEY}, timeout=REQUEST_TIMEOUT)
@@ -386,7 +427,7 @@ async def button_handler_inner(update: Update, context: ContextTypes.DEFAULT_TYP
                 keyboard.append([InlineKeyboardButton("◀ Cancel", callback_data="main_menu")])
                 await query.edit_message_text(f"Amount: ${amount:.2f}\nChoose your payment method:", reply_markup=InlineKeyboardMarkup(keyboard))
             else:
-                await query.edit_message_text(f"❌ Error fetching payment methods: {oxa_data.get('message')}")
+                await query.edit_message_text(f"❌ Error creating OxaPay payment link: {oxa_data.get('message')}\nPlease check your OXAPAY_MERCHANT_KEY in settings.")
         except Exception as e:
             logging.error(f"OxaPay API Error: {e}")
             await query.edit_message_text("❌ Error connecting to payment provider. Please try again in a moment.")
@@ -683,6 +724,38 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     context.user_data['awaiting_stock_file'] = None
     await update.message.reply_text(f"✅ Added {len(codes)} items to '{product_id}' from the file. Total stock is now {new_stock}.")
 
+async def web_app_data_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.effective_message or not update.effective_message.web_app_data:
+        return
+    data_str = update.effective_message.web_app_data.data
+    try:
+        data = json.loads(data_str)
+    except Exception as e:
+        logging.error(f"Error parsing web app data: {e}")
+        return
+
+    action = data.get("action")
+    if action == "add_funds":
+        context.user_data['awaiting_amount'] = True
+        keyboard = [
+            [InlineKeyboardButton("◀ Cancel", callback_data="cancel_addfunds")]
+        ]
+        await update.effective_message.reply_text(
+            "Please type and send the amount you want to add (e.g. 5 or 2.50):",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+    elif action == "buy_product":
+        product_id = data.get("product_id")
+        if product_id in PRODUCTS:
+            stock = get_product_stock(product_id)
+            if stock <= 0:
+                await update.effective_message.reply_text("❌ Sorry, this product is currently out of stock.")
+                return
+            context.user_data['cur_product'] = product_id
+            context.user_data['awaiting_quantity'] = True
+            msg, markup = build_product_intro(product_id)
+            await update.effective_message.reply_text(msg, reply_markup=markup)
+
 # --- MAIN RUNNER ---
 def main() -> None:
     init_db()
@@ -691,6 +764,7 @@ def main() -> None:
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("addstock", addstock))
     application.add_handler(CallbackQueryHandler(button_handler))
+    application.add_handler(MessageHandler(filters.StatusUpdate.WEB_APP_DATA, web_app_data_handler))
     application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
