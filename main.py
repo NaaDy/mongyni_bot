@@ -18,6 +18,12 @@ DB_PATH = os.getenv('DB_PATH', 'mongyni.db')
 REQUEST_TIMEOUT = 15  # seconds — so a slow payment API can never freeze the whole bot
 OXAPAY_MIN_INVOICE = 0.50  # OxaPay minimum USD invoice limit
 
+OXAPAY_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Accept": "application/json",
+    "Content-Type": "application/json"
+}
+
 # --- CONFIGURATION DEFAULT FALLBACKS ---
 ADMIN_ID = int(os.getenv("ADMIN_ID", "1477846847"))  # Telegram Admin User ID
 MINI_APP_URL = os.getenv("MINI_APP_URL", "https://naady.github.io/mongyni_bot/")
@@ -60,6 +66,18 @@ PRODUCTS = {
 
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 
+# --- OXAPAY SAFE REQUEST HELPER ---
+def oxapay_post_request(endpoint, payload):
+    url = f"https://api.oxapay.com{endpoint}"
+    try:
+        res = requests.post(url, headers=OXAPAY_HEADERS, json=payload, timeout=REQUEST_TIMEOUT)
+        try:
+            return True, res.status_code, res.json()
+        except Exception:
+            return False, res.status_code, f"Non-JSON response (HTTP {res.status_code}): {res.text[:150]}"
+    except Exception as e:
+        return False, 0, f"Network error: {str(e)}"
+
 # --- DATABASE SETUP & DYNAMIC SETTINGS ---
 def init_db():
     conn = sqlite3.connect(DB_PATH)
@@ -69,7 +87,6 @@ def init_db():
     cursor.execute('''CREATE TABLE IF NOT EXISTS transactions (track_id INTEGER PRIMARY KEY, user_id INTEGER, amount REAL, status TEXT, method TEXT, product_id TEXT, qty INTEGER, extra_credit REAL)''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)''')
 
-    # Ensure transactions table has product_id, qty, and extra_credit columns
     cursor.execute("PRAGMA table_info(transactions)")
     cols = [column[1] for column in cursor.fetchall()]
     if 'product_id' not in cols:
@@ -349,7 +366,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     except Exception as e:
         logging.error(f"Unhandled error in button_handler (data={query.data}): {e}")
         try:
-            await query.message.reply_text("❌ Something went wrong. Please tap /start and try again.")
+            await query.message.reply_text(f"❌ Error: {str(e)}. Please tap /start and try again.")
         except Exception:
             pass
 
@@ -462,35 +479,32 @@ async def button_handler_inner(update: Update, context: ContextTypes.DEFAULT_TYP
             "description": f"Direct order {qty}x {info['name']} for User {user_id}"
         }
 
-        try:
-            res = requests.post("https://api.oxapay.com/merchants/request", json=payload, timeout=REQUEST_TIMEOUT)
-            res_data = res.json()
-            if res_data.get("result") == 100:
-                pay_link = res_data.get("payLink")
-                track_id = res_data.get("trackId")
-                create_transaction(track_id, user_id, total_price, "pending", "oxapay", product_id=product_id, qty=qty, extra_credit=extra_credit)
+        ok, status_code, res_data = oxapay_post_request("/merchants/request", payload)
 
-                keyboard = [
-                    [InlineKeyboardButton("💳 Pay via OxaPay Invoice", url=pay_link)],
-                    [InlineKeyboardButton("Check Payment Status", callback_data=f"checkpay_{track_id}")],
-                    [InlineKeyboardButton("◀ Main Menu", callback_data="main_menu")]
-                ]
-                msg = (f"💳 <b>Direct Payment Invoice for {qty}x {info['name']}</b>\n\n"
-                       f"Product Total: <b>${total_price:.2f} USD</b>\n"
-                       f"Invoice Amount: <b>${invoice_amount:.2f} USD</b>\n\n")
-                if extra_credit > 0:
-                    msg += f"💡 <i>Note: OxaPay minimum payment is $0.50. The extra <b>${extra_credit:.2f}</b> will be credited to your bot balance automatically!</i>\n\n"
+        if ok and isinstance(res_data, dict) and res_data.get("result") == 100:
+            pay_link = res_data.get("payLink")
+            track_id = res_data.get("trackId")
+            create_transaction(track_id, user_id, total_price, "pending", "oxapay", product_id=product_id, qty=qty, extra_credit=extra_credit)
 
-                msg += f"Click the button below to complete your payment on OxaPay:"
-                await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
-            else:
-                await query.edit_message_text(
-                    f"❌ OxaPay API Error: {res_data.get('message')}\n\n"
-                    f"💡 If your key is invalid, please update it with `/setoxapay YOUR_KEY`"
-                )
-        except Exception as e:
-            logging.error(f"Direct OxaPay API Error: {e}")
-            await query.edit_message_text("❌ Error connecting to OxaPay. Please try again in a moment.")
+            keyboard = [
+                [InlineKeyboardButton("💳 Pay via OxaPay Invoice", url=pay_link)],
+                [InlineKeyboardButton("Check Payment Status", callback_data=f"checkpay_{track_id}")],
+                [InlineKeyboardButton("◀ Main Menu", callback_data="main_menu")]
+            ]
+            msg = (f"💳 <b>Direct Payment Invoice for {qty}x {info['name']}</b>\n\n"
+                   f"Product Total: <b>${total_price:.2f} USD</b>\n"
+                   f"Invoice Amount: <b>${invoice_amount:.2f} USD</b>\n\n")
+            if extra_credit > 0:
+                msg += f"💡 <i>Note: OxaPay minimum payment is $0.50. The extra <b>${extra_credit:.2f}</b> will be credited to your bot balance automatically!</i>\n\n"
+
+            msg += f"Click the button below to complete your payment on OxaPay:"
+            await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
+        else:
+            err_msg = res_data.get("message") if isinstance(res_data, dict) else str(res_data)
+            await query.edit_message_text(
+                f"❌ OxaPay Error ({status_code}): {err_msg}\n\n"
+                f"💡 If your Merchant Key is invalid, please set it using `/setoxapay YOUR_KEY`"
+            )
 
     # --- Direct Product Bybit Pay ---
     elif data.startswith("payprod_bybit_"):
@@ -562,32 +576,29 @@ async def button_handler_inner(update: Update, context: ContextTypes.DEFAULT_TYP
             "description": f"Add funds for User {user_id}"
         }
 
-        try:
-            res = requests.post("https://api.oxapay.com/merchants/request", json=payload, timeout=REQUEST_TIMEOUT)
-            res_data = res.json()
-            if res_data.get("result") == 100:
-                pay_link = res_data.get("payLink")
-                track_id = res_data.get("trackId")
-                create_transaction(track_id, user_id, amount, "pending", "oxapay", extra_credit=extra_credit)
+        ok, status_code, res_data = oxapay_post_request("/merchants/request", payload)
 
-                keyboard = [
-                    [InlineKeyboardButton("💳 Pay via OxaPay Invoice", url=pay_link)],
-                    [InlineKeyboardButton("Check Payment Status", callback_data=f"checkpay_{track_id}")],
-                    [InlineKeyboardButton("◀ Main Menu", callback_data="main_menu")]
-                ]
-                msg = (f"💳 <b>OxaPay Payment Invoice</b>\n\n"
-                       f"Amount to Deposit: <b>${amount:.2f} USD</b>\n"
-                       f"Total Invoice Amount: <b>${invoice_amount:.2f} USD</b>\n\n"
-                       f"Tap the button below to complete your payment on OxaPay:")
-                await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
-            else:
-                await query.edit_message_text(
-                    f"❌ OxaPay API Error: {res_data.get('message')}\n\n"
-                    f"💡 Please check your key using `/setoxapay YOUR_KEY`"
-                )
-        except Exception as e:
-            logging.error(f"OxaPay link creation API Error: {e}")
-            await query.edit_message_text("❌ Error connecting to payment provider. Please try again in a moment.")
+        if ok and isinstance(res_data, dict) and res_data.get("result") == 100:
+            pay_link = res_data.get("payLink")
+            track_id = res_data.get("trackId")
+            create_transaction(track_id, user_id, amount, "pending", "oxapay", extra_credit=extra_credit)
+
+            keyboard = [
+                [InlineKeyboardButton("💳 Pay via OxaPay Invoice", url=pay_link)],
+                [InlineKeyboardButton("Check Payment Status", callback_data=f"checkpay_{track_id}")],
+                [InlineKeyboardButton("◀ Main Menu", callback_data="main_menu")]
+            ]
+            msg = (f"💳 <b>OxaPay Payment Invoice</b>\n\n"
+                   f"Amount to Deposit: <b>${amount:.2f} USD</b>\n"
+                   f"Total Invoice Amount: <b>${invoice_amount:.2f} USD</b>\n\n"
+                   f"Tap the button below to complete your payment on OxaPay:")
+            await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
+        else:
+            err_msg = res_data.get("message") if isinstance(res_data, dict) else str(res_data)
+            await query.edit_message_text(
+                f"❌ OxaPay API Error ({status_code}): {err_msg}\n\n"
+                f"💡 Please check your key using `/setoxapay YOUR_KEY`"
+            )
 
     elif data.startswith("paycoin_"):
         parts = data.split("_", 2)
@@ -624,29 +635,26 @@ async def button_handler_inner(update: Update, context: ContextTypes.DEFAULT_TYP
         if network and network != "none":
             payload["network"] = network
 
-        try:
-            response = requests.post("https://api.oxapay.com/merchants/request/whitelabel", json=payload, timeout=REQUEST_TIMEOUT)
-            res_data = response.json()
-            if res_data.get("result") == 100:
-                address = res_data.get("address")
-                pay_amount = res_data.get("payAmount")
-                track_id = res_data.get("trackId")
+        ok, status_code, res_data = oxapay_post_request("/merchants/request/whitelabel", payload)
 
-                create_transaction(track_id, user_id, amount, "pending", "oxapay")
+        if ok and isinstance(res_data, dict) and res_data.get("result") == 100:
+            address = res_data.get("address")
+            pay_amount = res_data.get("payAmount")
+            track_id = res_data.get("trackId")
 
-                msg = (f"⚠️ Please send EXACTLY this amount:\n<code>{pay_amount}</code> {pay_currency}\n\n"
-                       f"📬 To this {network.upper()} address (Tap to copy):\n<code>{address}</code>\n\n"
-                       f"Once sent, click the button below to check status.")
-                keyboard = [
-                    [InlineKeyboardButton("Check Payment Status", callback_data=f"checkpay_{track_id}")],
-                    [InlineKeyboardButton("◀ Main Menu", callback_data="main_menu")]
-                ]
-                await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
-            else:
-                await query.edit_message_text(f"❌ Error generating address: {res_data.get('message')}")
-        except Exception as e:
-            logging.error(f"OxaPay API Error: {e}")
-            await query.edit_message_text("❌ Error connecting to payment provider. Please try again in a moment.")
+            create_transaction(track_id, user_id, amount, "pending", "oxapay")
+
+            msg = (f"⚠️ Please send EXACTLY this amount:\n<code>{pay_amount}</code> {pay_currency}\n\n"
+                   f"📬 To this {network.upper()} address (Tap to copy):\n<code>{address}</code>\n\n"
+                   f"Once sent, click the button below to check status.")
+            keyboard = [
+                [InlineKeyboardButton("Check Payment Status", callback_data=f"checkpay_{track_id}")],
+                [InlineKeyboardButton("◀ Main Menu", callback_data="main_menu")]
+            ]
+            await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
+        else:
+            err_msg = res_data.get("message") if isinstance(res_data, dict) else str(res_data)
+            await query.edit_message_text(f"❌ Error generating address ({status_code}): {err_msg}")
 
     elif data.startswith("checkpay_"):
         track_id = data.split("_")[1]
@@ -656,11 +664,10 @@ async def button_handler_inner(update: Update, context: ContextTypes.DEFAULT_TYP
             "merchant": merchant_key,
             "trackId": int(track_id)
         }
-        try:
-            response = requests.post("https://api.oxapay.com/merchants/inquiry", json=payload, timeout=REQUEST_TIMEOUT)
-            res_data = response.json()
-            status = res_data.get("status")
+        ok, status_code, res_data = oxapay_post_request("/merchants/inquiry", payload)
 
+        if ok and isinstance(res_data, dict):
+            status = res_data.get("status")
             txn = get_transaction(track_id, user_id)
             if txn:
                 db_status, amount, method, product_id, qty, extra_credit = txn
@@ -684,9 +691,9 @@ async def button_handler_inner(update: Update, context: ContextTypes.DEFAULT_TYP
                     await query.edit_message_text(f"⏳ Payment is still pending (Status: {status}).", reply_markup=InlineKeyboardMarkup(keyboard))
             else:
                 await query.edit_message_text("❌ Transaction not found.")
-        except Exception as e:
-            logging.error(f"OxaPay Check Error: {e}")
-            await query.answer("❌ Error checking payment status.", show_alert=True)
+        else:
+            err_msg = res_data if isinstance(res_data, str) else str(res_data.get("message", "Unknown error"))
+            await query.answer(f"❌ OxaPay Check Error ({status_code}): {err_msg}", show_alert=True)
 
     # --- Bybit UID flow ---
     elif data == "paymethod_bybit":
