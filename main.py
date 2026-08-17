@@ -16,6 +16,7 @@ load_dotenv()
 
 DB_PATH = os.getenv('DB_PATH', 'mongyni.db')
 REQUEST_TIMEOUT = 15  # seconds — so a slow payment API can never freeze the whole bot
+OXAPAY_MIN_INVOICE = 0.50  # OxaPay minimum USD invoice limit
 
 # --- CONFIGURATION DEFAULT FALLBACKS ---
 ADMIN_ID = int(os.getenv("ADMIN_ID", "1477846847"))  # Telegram Admin User ID
@@ -65,16 +66,18 @@ def init_db():
     cursor = conn.cursor()
     cursor.execute('''CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, balance REAL)''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS inventory (id INTEGER PRIMARY KEY AUTOINCREMENT, product_id TEXT, data TEXT)''')
-    cursor.execute('''CREATE TABLE IF NOT EXISTS transactions (track_id INTEGER PRIMARY KEY, user_id INTEGER, amount REAL, status TEXT, method TEXT, product_id TEXT, qty INTEGER)''')
+    cursor.execute('''CREATE TABLE IF NOT EXISTS transactions (track_id INTEGER PRIMARY KEY, user_id INTEGER, amount REAL, status TEXT, method TEXT, product_id TEXT, qty INTEGER, extra_credit REAL)''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)''')
 
-    # Ensure transactions table has product_id and qty columns
+    # Ensure transactions table has product_id, qty, and extra_credit columns
     cursor.execute("PRAGMA table_info(transactions)")
     cols = [column[1] for column in cursor.fetchall()]
     if 'product_id' not in cols:
         cursor.execute('ALTER TABLE transactions ADD COLUMN product_id TEXT')
     if 'qty' not in cols:
         cursor.execute('ALTER TABLE transactions ADD COLUMN qty INTEGER')
+    if 'extra_credit' not in cols:
+        cursor.execute('ALTER TABLE transactions ADD COLUMN extra_credit REAL')
 
     conn.commit()
     conn.close()
@@ -162,18 +165,18 @@ def take_inventory_items(product_id, qty):
     conn.close()
     return [row[1] for row in rows]
 
-def create_transaction(track_id, user_id, amount, status, method, product_id=None, qty=0):
+def create_transaction(track_id, user_id, amount, status, method, product_id=None, qty=0, extra_credit=0.0):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    cursor.execute('INSERT INTO transactions (track_id, user_id, amount, status, method, product_id, qty) VALUES (?, ?, ?, ?, ?, ?, ?)',
-                   (track_id, user_id, amount, status, method, product_id, qty))
+    cursor.execute('INSERT INTO transactions (track_id, user_id, amount, status, method, product_id, qty, extra_credit) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+                   (track_id, user_id, amount, status, method, product_id, qty, extra_credit))
     conn.commit()
     conn.close()
 
 def get_transaction(track_id, user_id):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    cursor.execute('SELECT status, amount, method, product_id, qty FROM transactions WHERE track_id = ? AND user_id = ?', (track_id, user_id))
+    cursor.execute('SELECT status, amount, method, product_id, qty, extra_credit FROM transactions WHERE track_id = ? AND user_id = ?', (track_id, user_id))
     row = cursor.fetchone()
     conn.close()
     return row
@@ -281,7 +284,7 @@ def build_confirm_page(product_id, qty, user_id):
 
     keyboard.append([InlineKeyboardButton("💠 Direct Pay via Crypto (OxaPay)", callback_data=f"payprod_oxapay_{product_id}_{qty}")])
     keyboard.append([InlineKeyboardButton("🅱️ Direct Pay via Bybit UID", callback_data=f"payprod_bybit_{product_id}_{qty}")])
-    keyboard.append([InlineKeyboardButton("💳 Add Funds to Account", callback_data="menu_addfunds")])
+    keyboard.append([InlineKeyboardButton("💳 Add Funds to Balance", callback_data="menu_addfunds")])
     keyboard.append([InlineKeyboardButton("◀ Cancel", callback_data="main_menu")])
 
     return msg, InlineKeyboardMarkup(keyboard)
@@ -295,7 +298,7 @@ def build_payment_method_page(amount):
     ]
     return msg, InlineKeyboardMarkup(keyboard)
 
-async def fulfill_transaction(query_or_message, track_id, user_id, amount, product_id, qty):
+async def fulfill_transaction(query_or_message, track_id, user_id, amount, product_id, qty, extra_credit=0.0):
     info = PRODUCTS.get(product_id)
     if product_id and qty > 0 and info:
         items = take_inventory_items(product_id, qty)
@@ -303,8 +306,13 @@ async def fulfill_transaction(query_or_message, track_id, user_id, amount, produ
             delivery_text = "\n".join(items)
             msg = (f"✅ Payment successful & order delivered!\n\n"
                    f"Product: <b>{qty}x {info['name']}</b>\n"
-                   f"Amount Paid: <b>${amount:.2f}</b>\n\n"
-                   f"Here are your account details:\n{delivery_text}")
+                   f"Amount Paid: <b>${amount:.2f}</b>\n\n")
+            if extra_credit and extra_credit > 0:
+                update_user_balance(user_id, extra_credit)
+                new_bal = get_user_balance(user_id)
+                msg += f"💵 <b>${extra_credit:.2f}</b> extra has been credited to your balance (New Balance: ${new_bal:.2f}).\n\n"
+            
+            msg += f"Here are your account details:\n{delivery_text}"
             if hasattr(query_or_message, 'edit_message_text'):
                 await query_or_message.edit_message_text(msg, parse_mode="HTML")
             else:
@@ -432,7 +440,16 @@ async def button_handler_inner(update: Update, context: ContextTypes.DEFAULT_TYP
             return
 
         total_price = info["price"] * qty
-        invoice_amount = total_price + 0.04
+        raw_invoice_amount = total_price + 0.04
+        
+        # Ensure invoice satisfies OxaPay $0.50 USD minimum
+        if raw_invoice_amount < OXAPAY_MIN_INVOICE:
+            invoice_amount = OXAPAY_MIN_INVOICE
+            extra_credit = round(OXAPAY_MIN_INVOICE - total_price, 5)
+        else:
+            invoice_amount = raw_invoice_amount
+            extra_credit = 0.0
+
         order_id = str(uuid.uuid4())
 
         payload = {
@@ -451,7 +468,7 @@ async def button_handler_inner(update: Update, context: ContextTypes.DEFAULT_TYP
             if res_data.get("result") == 100:
                 pay_link = res_data.get("payLink")
                 track_id = res_data.get("trackId")
-                create_transaction(track_id, user_id, total_price, "pending", "oxapay", product_id=product_id, qty=qty)
+                create_transaction(track_id, user_id, total_price, "pending", "oxapay", product_id=product_id, qty=qty, extra_credit=extra_credit)
 
                 keyboard = [
                     [InlineKeyboardButton("💳 Pay via OxaPay Invoice", url=pay_link)],
@@ -459,12 +476,18 @@ async def button_handler_inner(update: Update, context: ContextTypes.DEFAULT_TYP
                     [InlineKeyboardButton("◀ Main Menu", callback_data="main_menu")]
                 ]
                 msg = (f"💳 <b>Direct Payment Invoice for {qty}x {info['name']}</b>\n\n"
-                       f"Total Price: <b>${total_price:.2f} USD</b>\n"
-                       f"Invoice Total (inc. fee): <b>${invoice_amount:.2f} USD</b>\n\n"
-                       f"Click the button below to complete your payment on OxaPay:")
+                       f"Product Total: <b>${total_price:.2f} USD</b>\n"
+                       f"Invoice Amount: <b>${invoice_amount:.2f} USD</b>\n\n")
+                if extra_credit > 0:
+                    msg += f"💡 <i>Note: OxaPay minimum payment is $0.50. The extra <b>${extra_credit:.2f}</b> will be credited to your bot balance automatically!</i>\n\n"
+
+                msg += f"Click the button below to complete your payment on OxaPay:"
                 await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
             else:
-                await query.edit_message_text(f"❌ OxaPay Error: {res_data.get('message')}\nPlease check your OXAPAY_MERCHANT_KEY.")
+                await query.edit_message_text(
+                    f"❌ OxaPay API Error: {res_data.get('message')}\n\n"
+                    f"💡 If your key is invalid, please update it with `/setoxapay YOUR_KEY`"
+                )
         except Exception as e:
             logging.error(f"Direct OxaPay API Error: {e}")
             await query.edit_message_text("❌ Error connecting to OxaPay. Please try again in a moment.")
@@ -526,8 +549,9 @@ async def button_handler_inner(update: Update, context: ContextTypes.DEFAULT_TYP
             )
             return
 
+        invoice_amount = max(amount + 0.04, OXAPAY_MIN_INVOICE)
+        extra_credit = round(invoice_amount - amount, 5) if invoice_amount > (amount + 0.04) else 0.0
         order_id = str(uuid.uuid4())
-        invoice_amount = amount + 0.04
         payload = {
             "merchant": merchant_key,
             "amount": invoice_amount,
@@ -544,7 +568,7 @@ async def button_handler_inner(update: Update, context: ContextTypes.DEFAULT_TYP
             if res_data.get("result") == 100:
                 pay_link = res_data.get("payLink")
                 track_id = res_data.get("trackId")
-                create_transaction(track_id, user_id, amount, "pending", "oxapay")
+                create_transaction(track_id, user_id, amount, "pending", "oxapay", extra_credit=extra_credit)
 
                 keyboard = [
                     [InlineKeyboardButton("💳 Pay via OxaPay Invoice", url=pay_link)],
@@ -553,11 +577,14 @@ async def button_handler_inner(update: Update, context: ContextTypes.DEFAULT_TYP
                 ]
                 msg = (f"💳 <b>OxaPay Payment Invoice</b>\n\n"
                        f"Amount to Deposit: <b>${amount:.2f} USD</b>\n"
-                       f"Total Invoice (inc. fee): <b>${invoice_amount:.2f} USD</b>\n\n"
+                       f"Total Invoice Amount: <b>${invoice_amount:.2f} USD</b>\n\n"
                        f"Tap the button below to complete your payment on OxaPay:")
                 await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
             else:
-                await query.edit_message_text(f"❌ OxaPay Error: {res_data.get('message')}\nPlease check your OXAPAY_MERCHANT_KEY in settings.")
+                await query.edit_message_text(
+                    f"❌ OxaPay API Error: {res_data.get('message')}\n\n"
+                    f"💡 Please check your key using `/setoxapay YOUR_KEY`"
+                )
         except Exception as e:
             logging.error(f"OxaPay link creation API Error: {e}")
             await query.edit_message_text("❌ Error connecting to payment provider. Please try again in a moment.")
@@ -636,12 +663,12 @@ async def button_handler_inner(update: Update, context: ContextTypes.DEFAULT_TYP
 
             txn = get_transaction(track_id, user_id)
             if txn:
-                db_status, amount, method, product_id, qty = txn
+                db_status, amount, method, product_id, qty, extra_credit = txn
                 if db_status == "completed":
                     await query.edit_message_text(f"✅ This payment of ${amount:.2f} has already been completed and processed.")
                 elif status and status.lower() == "paid":
                     mark_transaction_completed(track_id)
-                    await fulfill_transaction(query, track_id, user_id, amount, product_id, qty)
+                    await fulfill_transaction(query, track_id, user_id, amount, product_id, qty, extra_credit=extra_credit)
                 elif status and status.lower() == "expired":
                     conn = sqlite3.connect(DB_PATH)
                     cursor = conn.cursor()
@@ -695,7 +722,7 @@ async def button_handler_inner(update: Update, context: ContextTypes.DEFAULT_TYP
             await query.answer("❌ Transaction not found.", show_alert=True)
             return
 
-        db_status, amount, method, product_id, qty = txn
+        db_status, amount, method, product_id, qty, extra_credit = txn
         if db_status == "completed":
             await query.edit_message_text(f"✅ This payment of ${amount:.2f} has already been completed.")
             return
@@ -712,7 +739,7 @@ async def button_handler_inner(update: Update, context: ContextTypes.DEFAULT_TYP
         found = find_matching_bybit_deposit(unique_amount)
         if found:
             mark_transaction_completed(track_id)
-            await fulfill_transaction(query, track_id, user_id, amount, product_id, qty)
+            await fulfill_transaction(query, track_id, user_id, amount, product_id, qty, extra_credit=extra_credit)
         else:
             keyboard = [
                 [InlineKeyboardButton("✅ I've Sent It — Check Now", callback_data=f"checkbybit_{track_id}")],
