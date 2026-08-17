@@ -8,6 +8,7 @@ import time
 import hmac
 import hashlib
 import html as html_lib
+import io
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, CallbackQueryHandler, filters
@@ -114,7 +115,7 @@ STRINGS = {
         "out_of_stock": "عذراً، هذا المنتج غير متوفر حالياً.",
         "quantity_prompt": "✏️ كم العدد الذي ترغب بشرائه؟ يرجى إرسال رقم.",
         "insufficient_balance": "❌ <b>رصيدك غير كافٍ</b> (${balance:.2f}). المطلوب: <b>${total:.2f}</b>.",
-        "purchase_success": "✅ اكتمل الشراء بنجاح! {qty}x {name} — تم خصم ${total:.2f}.\nالرصيد المتبقي: ${balance:.2f}\n\nإليك بيانات الحسابات:\n{delivery}",
+        "purchase_success": "✅ اكتمل الشراء بنجاح! {qty}x {name} — تم خصم ${total:.2f}.\nالرصيد المتبقي: ${balance:.2f}\n\n📁 <b>تم إرفاق طلبك في الملف النصي (.txt) المرفق أدناه.</b>",
         "cancel": "◀ إلغاء",
         "main_menu": "◀ القائمة الرئيسية",
         "apply_coupon": "🎟️ استخدام كود خصم",
@@ -136,7 +137,7 @@ STRINGS = {
         "out_of_stock": "Sorry, this product is currently out of stock.",
         "quantity_prompt": "✏️ How many do you want? Please type a number.",
         "insufficient_balance": "❌ <b>Insufficient Balance</b> (${balance:.2f}). Total required: <b>${total:.2f}</b>.",
-        "purchase_success": "✅ Purchase successful! {qty}x {name} — ${total:.2f} deducted.\nRemaining balance: ${balance:.2f}\n\nHere are your details:\n{delivery}",
+        "purchase_success": "✅ Purchase successful! {qty}x {name} — ${total:.2f} deducted.\nRemaining balance: ${balance:.2f}\n\n📁 <b>Your order has been delivered in the attached (.txt) file below.</b>",
         "cancel": "◀ Cancel",
         "main_menu": "◀ Main Menu",
         "apply_coupon": "🎟️ Apply Promo Code",
@@ -755,7 +756,7 @@ async def fulfill_transaction(query_or_message, track_id, user_id, amount, produ
             check_and_notify_low_stock(product_id, bot_context)
 
             delivery_text = "\n".join(items)
-            msg = s["purchase_success"].format(qty=qty, name=info["name"], total=amount, balance=get_user_balance(user_id), delivery=delivery_text)
+            msg = s["purchase_success"].format(qty=qty, name=info["name"], total=amount, balance=get_user_balance(user_id))
             if extra_credit and extra_credit > 0:
                 update_user_balance(user_id, extra_credit)
                 new_bal = get_user_balance(user_id)
@@ -765,6 +766,20 @@ async def fulfill_transaction(query_or_message, track_id, user_id, amount, produ
                 await query_or_message.edit_message_text(msg, parse_mode="HTML")
             else:
                 await query_or_message.reply_text(msg, parse_mode="HTML")
+
+            file_bytes = io.BytesIO(delivery_text.encode('utf-8'))
+            filename = f"order_{product_id}_{qty}x.txt"
+            bot = bot_context.bot if bot_context else (query_or_message.get_bot() if hasattr(query_or_message, 'get_bot') else None)
+            if bot:
+                try:
+                    await bot.send_document(
+                        chat_id=user_id,
+                        document=file_bytes,
+                        filename=filename,
+                        caption=f"📦 {qty}x {info['name']}"
+                    )
+                except Exception as e:
+                    logging.error(f"Error sending order document: {e}")
             return
 
         # Out of stock fallback -> credit to balance
@@ -907,8 +922,21 @@ async def button_handler_inner(update: Update, context: ContextTypes.DEFAULT_TYP
 
             new_balance = get_user_balance(user_id)
             delivery_text = "\n".join(items)
-            msg = s["purchase_success"].format(qty=qty, name=info["name"], total=total_price, balance=new_balance, delivery=delivery_text)
+            msg = s["purchase_success"].format(qty=qty, name=info["name"], total=total_price, balance=new_balance)
             await query.edit_message_text(msg, parse_mode="HTML")
+
+            file_bytes = io.BytesIO(delivery_text.encode('utf-8'))
+            filename = f"order_{product_id}_{qty}x.txt"
+            try:
+                await context.bot.send_document(
+                    chat_id=user_id,
+                    document=file_bytes,
+                    filename=filename,
+                    caption=f"📦 {qty}x {info['name']}"
+                )
+            except Exception as e:
+                logging.error(f"Error sending order document: {e}")
+
             context.user_data.pop('cur_product', None)
             context.user_data.pop('cur_qty', None)
         else:
