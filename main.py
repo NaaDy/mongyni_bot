@@ -28,12 +28,16 @@ OXAPAY_HEADERS = {
 ADMIN_ID = int(os.getenv("ADMIN_ID", "1477846847"))  # Telegram Admin User ID
 MINI_APP_URL = os.getenv("MINI_APP_URL", "https://naady.github.io/mongyni_bot/")
 
-# --- PRODUCTS ---
+# --- PRODUCTS WITH BULK DISCOUNTS ---
 PRODUCTS = {
     "office365": {
         "name": "Office 365 1TB",
         "description": "1TB OneDrive storage + full Office apps, 1 year subscription.",
         "price": 1.30,
+        "bulk_discounts": [
+            {"min_qty": 5, "price": 1.20},
+            {"min_qty": 10, "price": 1.10}
+        ]
     },
     "hotmail": {
         "name": "Hotmail Trusted OAuth2 V8 (7-90 Days Aged)",
@@ -61,6 +65,10 @@ PRODUCTS = {
 🔑 OAuth2 V8 format
 📅 7–90 Days Aged accounts""",
         "price": 0.018,
+        "bulk_discounts": [
+            {"min_qty": 50, "price": 0.015},
+            {"min_qty": 100, "price": 0.012}
+        ]
     },
 }
 
@@ -130,7 +138,7 @@ def oxapay_post_request(endpoint, payload):
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    cursor.execute('''CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, balance REAL, lang TEXT DEFAULT 'ar', referred_by INTEGER DEFAULT 0, ref_earnings REAL DEFAULT 0.0)''')
+    cursor.execute('''CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, balance REAL, lang TEXT DEFAULT 'en', referred_by INTEGER DEFAULT 0, ref_earnings REAL DEFAULT 0.0)''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS inventory (id INTEGER PRIMARY KEY AUTOINCREMENT, product_id TEXT, data TEXT)''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS transactions (track_id INTEGER PRIMARY KEY, user_id INTEGER, amount REAL, status TEXT, method TEXT, product_id TEXT, qty INTEGER, extra_credit REAL)''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)''')
@@ -151,7 +159,7 @@ def init_db():
     cursor.execute("PRAGMA table_info(users)")
     user_cols = [c[1] for c in cursor.fetchall()]
     if 'lang' not in user_cols:
-        cursor.execute("ALTER TABLE users ADD COLUMN lang TEXT DEFAULT 'ar'")
+        cursor.execute("ALTER TABLE users ADD COLUMN lang TEXT DEFAULT 'en'")
     if 'referred_by' not in user_cols:
         cursor.execute("ALTER TABLE users ADD COLUMN referred_by INTEGER DEFAULT 0")
     if 'ref_earnings' not in user_cols:
@@ -200,13 +208,65 @@ def get_support_url():
     username = get_support_username()
     return f"https://t.me/{username}"
 
+def get_required_channel():
+    return get_setting("REQUIRED_CHANNEL", "").strip()
+
+async def check_channel_membership(bot, user_id):
+    channel = get_required_channel()
+    if not channel or user_id == ADMIN_ID:
+        return True
+    try:
+        chat_member = await bot.get_chat_member(chat_id=channel, user_id=user_id)
+        if chat_member.status in ("creator", "administrator", "member"):
+            return True
+    except Exception as e:
+        logging.warning(f"Error checking channel membership for user {user_id} in {channel}: {e}")
+        return True
+    return False
+
+async def prompt_join_channel(update_or_query, channel, lang="en"):
+    clean_ch = channel.lstrip("@")
+    url = f"https://t.me/{clean_ch}"
+    if lang == "ar":
+        msg = (f"📢 <b>الانضمام لقناة البث الرسمية مطلوب</b>\n\n"
+               f"لاستخدام البوت ومتابعة التحديثات والمخزون الجديد، يرجى الانضمام للقناة أولاً:\n"
+               f"<code>{channel}</code>")
+        btn_join = "📢 الانضمام للقناة الرسمية"
+        btn_check = "✅ تم الانضمام — متابعة"
+    else:
+        msg = (f"📢 <b>Official Updates Channel Required</b>\n\n"
+               f"To use our bot and get restock updates, please join our official channel first:\n"
+               f"<code>{channel}</code>")
+        btn_join = "📢 Join Official Channel"
+        btn_check = "✅ I Have Joined — Continue"
+
+    keyboard = [
+        [InlineKeyboardButton(btn_join, url=url)],
+        [InlineKeyboardButton(btn_check, callback_data="check_joined")],
+    ]
+    if hasattr(update_or_query, 'edit_message_text'):
+        await update_or_query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
+    else:
+        await update_or_query.reply_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
+
+def get_product_unit_price(product_id, qty=1):
+    info = PRODUCTS.get(product_id)
+    if not info:
+        return 0.0
+    base_price = info["price"]
+    bulk = info.get("bulk_discounts", [])
+    for tier in sorted(bulk, key=lambda x: x["min_qty"], reverse=True):
+        if qty >= tier["min_qty"]:
+            return tier["price"]
+    return base_price
+
 def get_user_lang(user_id):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute('SELECT lang FROM users WHERE user_id = ?', (user_id,))
     row = cursor.fetchone()
     conn.close()
-    return row[0] if row and row[0] else 'ar'
+    return row[0] if row and row[0] else 'en'
 
 def set_user_lang(user_id, lang):
     conn = sqlite3.connect(DB_PATH)
@@ -221,7 +281,7 @@ def get_user_balance(user_id):
     cursor.execute('SELECT balance FROM users WHERE user_id = ?', (user_id,))
     result = cursor.fetchone()
     if result is None:
-        cursor.execute('INSERT INTO users (user_id, balance) VALUES (?, ?)', (user_id, 0.0))
+        cursor.execute('INSERT INTO users (user_id, balance, lang) VALUES (?, ?, ?)', (user_id, 0.0, 'en'))
         conn.commit()
         balance = 0.0
     else:
@@ -234,7 +294,7 @@ def update_user_balance(user_id, amount_change):
     cursor = conn.cursor()
     cursor.execute('SELECT balance FROM users WHERE user_id = ?', (user_id,))
     if cursor.fetchone() is None:
-        cursor.execute('INSERT INTO users (user_id, balance) VALUES (?, ?)', (user_id, amount_change))
+        cursor.execute('INSERT INTO users (user_id, balance, lang) VALUES (?, ?, ?)', (user_id, amount_change, 'en'))
     else:
         cursor.execute('UPDATE users SET balance = balance + ? WHERE user_id = ?', (amount_change, user_id))
     conn.commit()
@@ -243,16 +303,18 @@ def update_user_balance(user_id, amount_change):
 def set_user_balance_exact(user_id, new_balance):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    cursor.execute('INSERT OR REPLACE INTO users (user_id, balance) VALUES (?, ?)', (user_id, new_balance))
+    cursor.execute('INSERT OR REPLACE INTO users (user_id, balance, lang) VALUES (?, ?, ?)', (user_id, new_balance, 'en'))
     conn.commit()
     conn.close()
 
-def register_user(user_id, referred_by=0):
+def register_user(user_id, language_code=None, referred_by=0):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute('SELECT user_id FROM users WHERE user_id = ?', (user_id,))
     if cursor.fetchone() is None:
-        cursor.execute('INSERT INTO users (user_id, balance, referred_by) VALUES (?, 0.0, ?)', (user_id, referred_by))
+        # Default to English unless user's Telegram language starts with 'ar'
+        default_lang = 'ar' if language_code and str(language_code).lower().startswith('ar') else 'en'
+        cursor.execute('INSERT INTO users (user_id, balance, lang, referred_by) VALUES (?, 0.0, ?, ?)', (user_id, default_lang, referred_by))
         conn.commit()
     conn.close()
 
@@ -511,6 +573,7 @@ def find_matching_bybit_deposit(expected_amount, tolerance=0.000001):
 # --- BOT COMMANDS & UI ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
+    user_tg_lang = update.effective_user.language_code
     
     # Process Referral Link if present
     referred_by = 0
@@ -520,9 +583,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         except ValueError:
             referred_by = 0
 
-    register_user(user_id, referred_by=referred_by)
-    balance = get_user_balance(user_id)
+    register_user(user_id, language_code=user_tg_lang, referred_by=referred_by)
     lang = get_user_lang(user_id)
+
+    # Mandatory Channel Check
+    req_channel = get_required_channel()
+    if req_channel:
+        is_member = await check_channel_membership(context.bot, user_id)
+        if not is_member:
+            await prompt_join_channel(update.callback_query if update.callback_query else update.message, req_channel, lang)
+            return
+
+    balance = get_user_balance(user_id)
     s = STRINGS[lang]
 
     keyboard = []
@@ -552,13 +624,22 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     else:
         await update.message.reply_text(msg, reply_markup=reply_markup, parse_mode="HTML")
 
-def build_product_intro(product_id, lang="ar"):
+def build_product_intro(product_id, lang="en"):
     info = PRODUCTS[product_id]
     stock = get_product_stock(product_id)
     s = STRINGS[lang]
+
+    price_str = f"${info['price']:.3f}"
+    bulk = info.get("bulk_discounts", [])
+    if bulk:
+        price_str += " (Bulk Discounts Available:\n"
+        for b in sorted(bulk, key=lambda x: x["min_qty"]):
+            price_str += f"  • {b['min_qty']}+ qty = ${b['price']:.3f} each\n"
+        price_str += ")"
+
     msg = (f"📦 {info['name']}\n\n"
            f"{info['description']}\n\n"
-           f"Price: ${info['price']:.2f} each\n"
+           f"Price: {price_str}\n"
            f"{s['stock']}: {stock}\n\n"
            f"{s['quantity_prompt']}")
     keyboard = [
@@ -571,15 +652,19 @@ def build_confirm_page(product_id, qty, user_id):
     lang = get_user_lang(user_id)
     s = STRINGS[lang]
 
-    total = info["price"] * qty
-    discount = context_user_data_discount = 0.0
-
+    unit_price = get_product_unit_price(product_id, qty)
+    total = unit_price * qty
     balance = get_user_balance(user_id)
     support_url = get_support_url()
 
+    bulk_notice = ""
+    if unit_price < info["price"]:
+        bulk_notice = f" 🎉 <i>Bulk Discount Applied (${unit_price:.3f} each)!</i>\n"
+
     msg = (f"📦 <b>{info['name']}</b>\n\n"
            f"Quantity: <b>{qty}</b>\n"
-           f"Price: <b>${info['price']:.2f}</b> each\n"
+           f"Price per item: <b>${unit_price:.3f}</b>\n"
+           f"{bulk_notice}"
            f"Total Price: <b>${total:.2f}</b>\n"
            f"Your Balance: <b>${balance:.2f}</b>\n\n"
            f"Choose how you would like to pay:")
@@ -598,7 +683,7 @@ def build_confirm_page(product_id, qty, user_id):
 
     return msg, InlineKeyboardMarkup(keyboard)
 
-def build_payment_method_page(amount, lang="ar"):
+def build_payment_method_page(amount, lang="en"):
     support_url = get_support_url()
     s = STRINGS[lang]
     msg = f"Amount to Deposit: ${amount:.2f}\n\nHow would you like to pay?"
@@ -695,6 +780,16 @@ async def button_handler_inner(update: Update, context: ContextTypes.DEFAULT_TYP
     lang = get_user_lang(user_id)
     s = STRINGS[lang]
 
+    if data == "check_joined":
+        req_channel = get_required_channel()
+        if req_channel:
+            is_member = await check_channel_membership(context.bot, user_id)
+            if not is_member:
+                await query.answer("❌ You haven't joined the required channel yet!", show_alert=True)
+                return
+        await start(update, context)
+        return
+
     if data == "main_menu":
         context.user_data['awaiting_quantity'] = False
         await start(update, context)
@@ -750,7 +845,8 @@ async def button_handler_inner(update: Update, context: ContextTypes.DEFAULT_TYP
             await query.answer("❌ Product not found.", show_alert=True)
             return
 
-        total_price = info["price"] * qty
+        unit_price = get_product_unit_price(product_id, qty)
+        total_price = unit_price * qty
         balance = get_user_balance(user_id)
 
         if balance < total_price:
@@ -802,7 +898,8 @@ async def button_handler_inner(update: Update, context: ContextTypes.DEFAULT_TYP
             )
             return
 
-        total_price = info["price"] * qty
+        unit_price = get_product_unit_price(product_id, qty)
+        total_price = unit_price * qty
         msg, markup = build_oxapay_coin_menu(f"payprodcoin_{product_id}_{qty}", f"Order: <b>{qty}x {info['name']}</b> — Price: <b>${total_price:.2f} USD</b>")
         await query.edit_message_text(msg, reply_markup=markup, parse_mode="HTML")
 
@@ -820,7 +917,8 @@ async def button_handler_inner(update: Update, context: ContextTypes.DEFAULT_TYP
             return
 
         merchant_key = get_oxapay_merchant_key()
-        total_price = info["price"] * qty
+        unit_price = get_product_unit_price(product_id, qty)
+        total_price = unit_price * qty
         
         # 1.4% percentage fee + unique 6-digit decimal tracking fraction
         track_id = int(uuid.uuid4().int % 10_000_000_000)
@@ -890,7 +988,8 @@ async def button_handler_inner(update: Update, context: ContextTypes.DEFAULT_TYP
             return
 
         bybit_uid = get_bybit_uid()
-        total_price = info["price"] * qty
+        unit_price = get_product_unit_price(product_id, qty)
+        total_price = unit_price * qty
         track_id = int(uuid.uuid4().int % 10_000_000_000)
         unique_suffix = (track_id % 9999) / 1000000.0
         unique_amount = round(total_price + unique_suffix, 6)
@@ -1173,6 +1272,22 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
 
 # --- ADMIN COMMANDS ---
+async def setchannel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message.from_user.id != ADMIN_ID:
+        return
+    if not context.args:
+        await update.message.reply_text("❌ Usage: `/setchannel @yourchannel` or `/setchannel off` to disable mandatory channel join.", parse_mode="HTML")
+        return
+
+    arg = context.args[0].strip()
+    if arg.lower() in ("off", "disable", "none"):
+        set_setting("REQUIRED_CHANNEL", "")
+        await update.message.reply_text("✅ Mandatory channel join requirement disabled.")
+    else:
+        channel = arg if arg.startswith("@") else f"@{arg}"
+        set_setting("REQUIRED_CHANNEL", channel)
+        await update.message.reply_text(f"✅ Mandatory updates channel set to <b>{channel}</b>!", parse_mode="HTML")
+
 async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message.from_user.id != ADMIN_ID:
         return
@@ -1503,6 +1618,7 @@ async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     by_uid = get_bybit_uid()
     by_key = get_bybit_api_key()
     sup_user = get_support_username()
+    req_ch = get_required_channel() or "Disabled"
 
     ox_status = "✅ Set" if ox_key and ox_key != "YOUR_OXAPAY_MERCHANT_KEY" else "❌ Not Configured"
     by_uid_status = f"✅ Set ({by_uid})" if by_uid and by_uid != "YOUR_BYBIT_UID_HERE" else "❌ Not Configured"
@@ -1510,13 +1626,15 @@ async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
     msg = (f"⚙️ <b>Bot Settings & Control Panel</b>\n\n"
            f"Support Handle: <b>@{sup_user}</b>\n"
+           f"Mandatory Channel: <b>{req_ch}</b>\n"
            f"OxaPay Merchant Key: {ox_status}\n"
            f"Bybit UID: {by_uid_status}\n"
            f"Bybit API Key: {by_api_status}\n\n"
-           f"<b>📢 Marketing & Broadcast:</b>\n"
+           f"<b>📢 Marketing & Channel:</b>\n"
+           f"• <code>/setchannel &lt;@channel|off&gt;</code> - Set mandatory channel\n"
            f"• <code>/broadcast &lt;msg&gt;</code> - Send message to all users\n"
-           f"• <code>/stats</code> - View sales, revenue & users stats\n"
-           f"• <code>/addcoupon &lt;code&gt; &lt;10%|1$ &gt; &lt;uses&gt;</code> - Add coupon\n"
+           f"• <code>/stats</code> - View sales & revenue stats\n"
+           f"• <code>/addcoupon &lt;code&gt; &lt;10%|1$&gt; &lt;uses&gt;</code> - Add coupon\n"
            f"• <code>/coupons</code> - List coupons\n"
            f"• <code>/delcoupon &lt;code&gt;</code> - Delete coupon\n\n"
            f"<b>📦 Inventory Control:</b>\n"
@@ -1595,15 +1713,31 @@ async def web_app_data_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             msg, markup = build_product_intro(product_id)
             await update.effective_message.reply_text(msg, reply_markup=markup)
 
+async def post_init(application: Application) -> None:
+    bot = application.bot
+    short_desc = "Welcome to Mongyni Store! Premium Digital Products & Services 24/7."
+    full_desc = ("Welcome to Mongyni Store!\n\n"
+                 "📦 High Quality Digital Accounts & Products\n"
+                 "⚡ 24/7 Instant Automated Delivery\n"
+                 "💳 Crypto & Bybit Automated Payments\n\n"
+                 "Click START below to browse our live product catalog!")
+    try:
+        await bot.set_my_short_description(short_desc)
+        await bot.set_my_description(full_desc)
+        logging.info("Bot welcome banner & short description updated successfully!")
+    except Exception as e:
+        logging.warning(f"Could not set bot descriptions: {e}")
+
 # --- MAIN RUNNER ---
 def main() -> None:
     init_db()
     token = get_bot_token()
-    application = Application.builder().token(token).build()
+    application = Application.builder().token(token).post_init(post_init).build()
 
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("addstock", addstock))
     application.add_handler(CommandHandler("clearstock", clearstock))
+    application.add_handler(CommandHandler("setchannel", setchannel))
     application.add_handler(CommandHandler("broadcast", broadcast))
     application.add_handler(CommandHandler("stats", stats))
     application.add_handler(CommandHandler("addcoupon", addcoupon_cmd))
@@ -1623,7 +1757,7 @@ def main() -> None:
     application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
-    print("Mongyni Bot is running with full features...")
+    print("Mongyni Bot is running with auto-language detection, bulk discounts & mandatory channel join...")
     application.run_polling()
 
 if __name__ == "__main__":
