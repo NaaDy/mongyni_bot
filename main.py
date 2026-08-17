@@ -17,20 +17,11 @@ load_dotenv()
 DB_PATH = os.getenv('DB_PATH', 'mongyni.db')
 REQUEST_TIMEOUT = 15  # seconds — so a slow payment API can never freeze the whole bot
 
-# --- CONFIGURATION ---
-BOT_TOKEN = os.getenv("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
-ADMIN_ID = int(os.getenv("ADMIN_ID", "1477846847")) # Put your numeric Telegram ID here
-MINI_APP_URL = os.getenv("MINI_APP_URL", "https://naady.github.io/mongyni_bot/") # Your GitHub Pages URL
-OXAPAY_MERCHANT_KEY = os.getenv("OXAPAY_MERCHANT_KEY", "YOUR_OXAPAY_MERCHANT_KEY") # Replace with your OxaPay API Key
-
-# --- BYBIT UID PAYMENTS ---
-BYBIT_API_KEY = os.getenv("BYBIT_API_KEY", "")
-BYBIT_API_SECRET = os.getenv("BYBIT_API_SECRET", "")
-BYBIT_UID = os.getenv("BYBIT_UID", "YOUR_BYBIT_UID_HERE")  # Your Bybit UID that customers transfer to
-BYBIT_API_BASE = "https://api.bybit.com"
+# --- CONFIGURATION DEFAULT FALLBACKS ---
+ADMIN_ID = int(os.getenv("ADMIN_ID", "1477846847"))  # Telegram Admin User ID
+MINI_APP_URL = os.getenv("MINI_APP_URL", "https://naady.github.io/mongyni_bot/")
 
 # --- PRODUCTS ---
-# To add a new product, just add a new entry here with a unique id (key).
 PRODUCTS = {
     "office365": {
         "name": "Office 365 1TB",
@@ -64,26 +55,62 @@ PRODUCTS = {
 📅 7–90 Days Aged accounts""",
         "price": 0.018,
     },
-
-    # Example of a new product — copy this block, edit it, and it will show up automatically:
-    # "netflix1m": {
-    #     "name": "Netflix Premium 1 Month",
-    #     "description": "Netflix Premium account, 1 month, Full HD/4K.",
-    #     "price": 2.50,
-    # },
 }
 
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 
-# --- DATABASE SETUP & FUNCTIONS ---
+# --- DATABASE SETUP & DYNAMIC SETTINGS ---
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute('''CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, balance REAL)''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS inventory (id INTEGER PRIMARY KEY AUTOINCREMENT, product_id TEXT, data TEXT)''')
-    cursor.execute('''CREATE TABLE IF NOT EXISTS transactions (track_id INTEGER PRIMARY KEY, user_id INTEGER, amount REAL, status TEXT, method TEXT)''')
+    cursor.execute('''CREATE TABLE IF NOT EXISTS transactions (track_id INTEGER PRIMARY KEY, user_id INTEGER, amount REAL, status TEXT, method TEXT, product_id TEXT, qty INTEGER)''')
+    cursor.execute('''CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)''')
+
+    # Ensure transactions table has product_id and qty columns
+    cursor.execute("PRAGMA table_info(transactions)")
+    cols = [column[1] for column in cursor.fetchall()]
+    if 'product_id' not in cols:
+        cursor.execute('ALTER TABLE transactions ADD COLUMN product_id TEXT')
+    if 'qty' not in cols:
+        cursor.execute('ALTER TABLE transactions ADD COLUMN qty INTEGER')
+
     conn.commit()
     conn.close()
+
+def get_setting(key, default=""):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute('SELECT value FROM settings WHERE key = ?', (key,))
+    row = cursor.fetchone()
+    conn.close()
+    if row and row[0]:
+        return row[0]
+    val = os.getenv(key, "")
+    return val if val else default
+
+def set_setting(key, value):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', (key, value))
+    conn.commit()
+    conn.close()
+
+def get_bot_token():
+    return get_setting("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
+
+def get_oxapay_merchant_key():
+    return get_setting("OXAPAY_MERCHANT_KEY", "YOUR_OXAPAY_MERCHANT_KEY")
+
+def get_bybit_uid():
+    return get_setting("BYBIT_UID", "YOUR_BYBIT_UID_HERE")
+
+def get_bybit_api_key():
+    return get_setting("BYBIT_API_KEY", "")
+
+def get_bybit_api_secret():
+    return get_setting("BYBIT_API_SECRET", "")
 
 def get_user_balance(user_id):
     conn = sqlite3.connect(DB_PATH)
@@ -122,7 +149,6 @@ def add_inventory_items(product_id, items):
     conn.close()
 
 def take_inventory_items(product_id, qty):
-    """Removes and returns up to qty items for a product. Returns None if not enough stock."""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute('SELECT id, data FROM inventory WHERE product_id = ? ORDER BY id LIMIT ?', (product_id, qty))
@@ -136,18 +162,18 @@ def take_inventory_items(product_id, qty):
     conn.close()
     return [row[1] for row in rows]
 
-def create_transaction(track_id, user_id, amount, status, method):
+def create_transaction(track_id, user_id, amount, status, method, product_id=None, qty=0):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    cursor.execute('INSERT INTO transactions (track_id, user_id, amount, status, method) VALUES (?, ?, ?, ?, ?)',
-                   (track_id, user_id, amount, status, method))
+    cursor.execute('INSERT INTO transactions (track_id, user_id, amount, status, method, product_id, qty) VALUES (?, ?, ?, ?, ?, ?, ?)',
+                   (track_id, user_id, amount, status, method, product_id, qty))
     conn.commit()
     conn.close()
 
 def get_transaction(track_id, user_id):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    cursor.execute('SELECT status, amount, method FROM transactions WHERE track_id = ? AND user_id = ?', (track_id, user_id))
+    cursor.execute('SELECT status, amount, method, product_id, qty FROM transactions WHERE track_id = ? AND user_id = ?', (track_id, user_id))
     row = cursor.fetchone()
     conn.close()
     return row
@@ -161,30 +187,27 @@ def mark_transaction_completed(track_id):
 
 # --- BYBIT API HELPERS ---
 def bybit_signed_get(endpoint, params=None):
-    """Makes a signed GET request to the Bybit V5 API and returns the parsed JSON response."""
     params = params or {}
     timestamp = str(int(time.time() * 1000))
     recv_window = "5000"
     query_string = "&".join(f"{k}={v}" for k, v in params.items())
-    sign_payload = timestamp + BYBIT_API_KEY + recv_window + query_string
-    signature = hmac.new(BYBIT_API_SECRET.encode(), sign_payload.encode(), hashlib.sha256).hexdigest()
+    api_key = get_bybit_api_key()
+    api_secret = get_bybit_api_secret()
+    sign_payload = timestamp + api_key + recv_window + query_string
+    signature = hmac.new(api_secret.encode(), sign_payload.encode(), hashlib.sha256).hexdigest()
     headers = {
-        "X-BAPI-API-KEY": BYBIT_API_KEY,
+        "X-BAPI-API-KEY": api_key,
         "X-BAPI-SIGN": signature,
         "X-BAPI-TIMESTAMP": timestamp,
         "X-BAPI-RECV-WINDOW": recv_window,
     }
-    url = f"{BYBIT_API_BASE}{endpoint}"
+    url = f"https://api.bybit.com{endpoint}"
     if query_string:
         url += f"?{query_string}"
     response = requests.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
     return response.json()
 
 def find_matching_bybit_deposit(expected_amount, tolerance=0.000001):
-    """
-    Looks through recent Bybit deposit records for a successful USDT deposit
-    matching the expected (unique) amount. Returns True if found, else False.
-    """
     try:
         data = bybit_signed_get("/v5/asset/deposit/query-record", {"coin": "USDT", "limit": "50"})
     except Exception as e:
@@ -240,28 +263,74 @@ def build_product_intro(product_id):
     ]
     return msg, InlineKeyboardMarkup(keyboard)
 
-def build_confirm_page(product_id, qty):
+def build_confirm_page(product_id, qty, user_id):
     info = PRODUCTS[product_id]
     total = info["price"] * qty
-    msg = (f"📦 {info['name']}\n\n"
-           f"Quantity: {qty}\n"
-           f"Price: ${info['price']:.2f} each\n"
-           f"Total: ${total:.2f}\n\n"
-           f"Confirm your purchase?")
-    keyboard = [
-        [InlineKeyboardButton("✅ Confirm Purchase", callback_data=f"confirm_{product_id}")],
-        [InlineKeyboardButton("◀ Cancel", callback_data="main_menu")],
-    ]
+    balance = get_user_balance(user_id)
+
+    msg = (f"📦 <b>{info['name']}</b>\n\n"
+           f"Quantity: <b>{qty}</b>\n"
+           f"Price: <b>${info['price']:.2f}</b> each\n"
+           f"Total Price: <b>${total:.2f}</b>\n"
+           f"Your Balance: <b>${balance:.2f}</b>\n\n"
+           f"Choose how you would like to pay:")
+
+    keyboard = []
+    if balance >= total:
+        keyboard.append([InlineKeyboardButton(f"✅ Pay with Balance (${balance:.2f})", callback_data=f"confirm_{product_id}_{qty}")])
+
+    keyboard.append([InlineKeyboardButton("💠 Direct Pay via Crypto (OxaPay)", callback_data=f"payprod_oxapay_{product_id}_{qty}")])
+    keyboard.append([InlineKeyboardButton("🅱️ Direct Pay via Bybit UID", callback_data=f"payprod_bybit_{product_id}_{qty}")])
+    keyboard.append([InlineKeyboardButton("💳 Add Funds to Account", callback_data="menu_addfunds")])
+    keyboard.append([InlineKeyboardButton("◀ Cancel", callback_data="main_menu")])
+
     return msg, InlineKeyboardMarkup(keyboard)
 
 def build_payment_method_page(amount):
-    msg = f"Amount: ${amount:.2f}\n\nHow would you like to pay?"
+    msg = f"Amount to Deposit: ${amount:.2f}\n\nHow would you like to pay?"
     keyboard = [
         [InlineKeyboardButton("💠 Pay with Crypto (OxaPay)", callback_data="paymethod_oxapay")],
         [InlineKeyboardButton("🅱️ Pay via Bybit UID", callback_data="paymethod_bybit")],
         [InlineKeyboardButton("◀ Cancel", callback_data="main_menu")],
     ]
     return msg, InlineKeyboardMarkup(keyboard)
+
+async def fulfill_transaction(query_or_message, track_id, user_id, amount, product_id, qty):
+    info = PRODUCTS.get(product_id)
+    if product_id and qty > 0 and info:
+        items = take_inventory_items(product_id, qty)
+        if items is not None:
+            delivery_text = "\n".join(items)
+            msg = (f"✅ Payment successful & order delivered!\n\n"
+                   f"Product: <b>{qty}x {info['name']}</b>\n"
+                   f"Amount Paid: <b>${amount:.2f}</b>\n\n"
+                   f"Here are your account details:\n{delivery_text}")
+            if hasattr(query_or_message, 'edit_message_text'):
+                await query_or_message.edit_message_text(msg, parse_mode="HTML")
+            else:
+                await query_or_message.reply_text(msg, parse_mode="HTML")
+            return
+
+        # Out of stock fallback -> credit to balance
+        update_user_balance(user_id, amount)
+        new_bal = get_user_balance(user_id)
+        msg = (f"✅ Payment of ${amount:.2f} received!\n\n"
+               f"⚠️ Unfortunately, {info['name']} went out of stock. ${amount:.2f} has been credited to your balance.\n"
+               f"New Balance: ${new_bal:.2f}")
+        if hasattr(query_or_message, 'edit_message_text'):
+            await query_or_message.edit_message_text(msg)
+        else:
+            await query_or_message.reply_text(msg)
+        return
+
+    # Regular Deposit -> update user balance
+    update_user_balance(user_id, amount)
+    new_bal = get_user_balance(user_id)
+    msg = f"✅ Payment successful! ${amount:.2f} added to your account.\nNew balance: ${new_bal:.2f}"
+    if hasattr(query_or_message, 'edit_message_text'):
+        await query_or_message.edit_message_text(msg)
+    else:
+        await query_or_message.reply_text(msg)
 
 # --- HANDLE INLINE BUTTONS ---
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -302,11 +371,10 @@ async def button_handler_inner(update: Update, context: ContextTypes.DEFAULT_TYP
         await query.edit_message_text(msg, reply_markup=markup)
 
     elif data.startswith("confirm_"):
-        product_id = data.split("_", 1)[1]
-        if context.user_data.get('cur_product') != product_id:
-            await query.answer("❌ Session expired, please reopen the product.", show_alert=True)
-            return
-        qty = context.user_data.get('cur_qty', 1)
+        parts = data.split("_")
+        product_id = parts[1]
+        qty = int(parts[2]) if len(parts) > 2 else context.user_data.get('cur_qty', 1)
+
         info = PRODUCTS.get(product_id)
         if not info:
             await query.answer("❌ Product not found.", show_alert=True)
@@ -316,35 +384,121 @@ async def button_handler_inner(update: Update, context: ContextTypes.DEFAULT_TYP
         balance = get_user_balance(user_id)
 
         if balance < total_price:
-            await query.answer(f"❌ Insufficient funds. You need ${total_price:.2f}.", show_alert=True)
+            keyboard = [
+                [InlineKeyboardButton("💠 Pay directly via OxaPay", callback_data=f"payprod_oxapay_{product_id}_{qty}")],
+                [InlineKeyboardButton("🅱️ Pay directly via Bybit UID", callback_data=f"payprod_bybit_{product_id}_{qty}")],
+                [InlineKeyboardButton("💳 Add Funds to Account", callback_data="menu_addfunds")],
+                [InlineKeyboardButton("◀ Main Menu", callback_data="main_menu")],
+            ]
+            await query.edit_message_text(
+                f"❌ <b>Insufficient Balance</b> (${balance:.2f}). Total required: <b>${total_price:.2f}</b>.\n\n"
+                f"Choose a payment option below to complete your order:",
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode="HTML"
+            )
             return
 
         items = take_inventory_items(product_id, qty)
         if items is not None:
             update_user_balance(user_id, -total_price)
             new_balance = get_user_balance(user_id)
-            # Plain text, no HTML formatting — codes are delivered exactly as stored,
-            # since they may contain characters like & or < that are part of the real data.
             delivery_text = "\n".join(items)
-            try:
-                await query.edit_message_text(
-                    f"✅ Purchase successful! {qty}x {info['name']} — ${total_price:.2f} has been deducted.\n\n"
-                    f"Your remaining balance: ${new_balance:.2f}\n\n"
-                    f"Here are your {info['name']} details:\n{delivery_text}"
-                )
-            except Exception as e:
-                logging.error(f"Failed to send delivery message: {e}")
-                # Last-resort fallback: send balance/confirmation and the raw codes as a separate message
-                await query.edit_message_text(
-                    f"✅ Purchase successful! {qty}x {info['name']} — ${total_price:.2f} has been deducted.\n\n"
-                    f"Your remaining balance: ${new_balance:.2f}\n\n"
-                    f"⚠️ Couldn't display your codes automatically. Contact support with order details."
-                )
-                logging.error(f"Undelivered codes for user {user_id}, product {product_id}: {items}")
+            await query.edit_message_text(
+                f"✅ Purchase successful! {qty}x {info['name']} — ${total_price:.2f} deducted.\n"
+                f"Remaining balance: ${new_balance:.2f}\n\n"
+                f"Here are your details:\n{delivery_text}"
+            )
             context.user_data.pop('cur_product', None)
             context.user_data.pop('cur_qty', None)
         else:
             await query.answer("❌ Sorry, not enough stock for that quantity.", show_alert=True)
+
+    # --- Direct Product OxaPay Pay ---
+    elif data.startswith("payprod_oxapay_"):
+        parts = data.split("_")
+        product_id = parts[2]
+        qty = int(parts[3])
+        info = PRODUCTS.get(product_id)
+        if not info:
+            await query.answer("❌ Product not found.", show_alert=True)
+            return
+
+        merchant_key = get_oxapay_merchant_key()
+        if not merchant_key or merchant_key == "YOUR_OXAPAY_MERCHANT_KEY":
+            await query.edit_message_text(
+                "⚠️ OxaPay payment gateway is not configured yet.\n\n"
+                "Admin: Please set your merchant key using `/setoxapay YOUR_KEY`"
+            )
+            return
+
+        total_price = info["price"] * qty
+        invoice_amount = total_price + 0.04
+        order_id = str(uuid.uuid4())
+
+        payload = {
+            "merchant": merchant_key,
+            "amount": invoice_amount,
+            "currency": "USD",
+            "lifeTime": 60,
+            "feePaidByPayer": 1,
+            "orderId": order_id,
+            "description": f"Direct order {qty}x {info['name']} for User {user_id}"
+        }
+
+        try:
+            res = requests.post("https://api.oxapay.com/merchants/request", json=payload, timeout=REQUEST_TIMEOUT)
+            res_data = res.json()
+            if res_data.get("result") == 100:
+                pay_link = res_data.get("payLink")
+                track_id = res_data.get("trackId")
+                create_transaction(track_id, user_id, total_price, "pending", "oxapay", product_id=product_id, qty=qty)
+
+                keyboard = [
+                    [InlineKeyboardButton("💳 Pay via OxaPay Invoice", url=pay_link)],
+                    [InlineKeyboardButton("Check Payment Status", callback_data=f"checkpay_{track_id}")],
+                    [InlineKeyboardButton("◀ Main Menu", callback_data="main_menu")]
+                ]
+                msg = (f"💳 <b>Direct Payment Invoice for {qty}x {info['name']}</b>\n\n"
+                       f"Total Price: <b>${total_price:.2f} USD</b>\n"
+                       f"Invoice Total (inc. fee): <b>${invoice_amount:.2f} USD</b>\n\n"
+                       f"Click the button below to complete your payment on OxaPay:")
+                await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
+            else:
+                await query.edit_message_text(f"❌ OxaPay Error: {res_data.get('message')}\nPlease check your OXAPAY_MERCHANT_KEY.")
+        except Exception as e:
+            logging.error(f"Direct OxaPay API Error: {e}")
+            await query.edit_message_text("❌ Error connecting to OxaPay. Please try again in a moment.")
+
+    # --- Direct Product Bybit Pay ---
+    elif data.startswith("payprod_bybit_"):
+        parts = data.split("_")
+        product_id = parts[2]
+        qty = int(parts[3])
+        info = PRODUCTS.get(product_id)
+        if not info:
+            await query.answer("❌ Product not found.", show_alert=True)
+            return
+
+        bybit_uid = get_bybit_uid()
+        total_price = info["price"] * qty
+        track_id = int(uuid.uuid4().int % 10_000_000_000)
+        unique_suffix = (track_id % 999) / 100000
+        unique_amount = round(total_price + unique_suffix, 5)
+
+        create_transaction(track_id, user_id, total_price, "pending", "bybit", product_id=product_id, qty=qty)
+        context.user_data['bybit_unique_amount'] = unique_amount
+
+        safe_uid = html_lib.escape(str(bybit_uid))
+        msg = (f"📬 Direct Payment for <b>{qty}x {info['name']}</b>:\n\n"
+               f"Send EXACTLY this amount via Bybit 'Send to UID':\n"
+               f"<code>{unique_amount}</code> USDT\n\n"
+               f"To Bybit UID:\n<code>{safe_uid}</code>\n\n"
+               f"Once sent, tap the button below to receive your product immediately.")
+        keyboard = [
+            [InlineKeyboardButton("✅ I've Sent It — Check Now", callback_data=f"checkbybit_{track_id}")],
+            [InlineKeyboardButton("◀ Main Menu", callback_data="main_menu")]
+        ]
+        await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
 
     elif data == "menu_addfunds":
         context.user_data['awaiting_amount'] = True
@@ -357,17 +511,25 @@ async def button_handler_inner(update: Update, context: ContextTypes.DEFAULT_TYP
         context.user_data['awaiting_amount'] = False
         await start(update, context)
 
-    # --- OxaPay flow ---
+    # --- OxaPay Add Funds flow ---
     elif data == "paymethod_oxapay":
         amount = context.user_data.get('deposit_amount')
         if not amount:
             await query.edit_message_text("❌ Session expired. Please try again.")
             return
 
+        merchant_key = get_oxapay_merchant_key()
+        if not merchant_key or merchant_key == "YOUR_OXAPAY_MERCHANT_KEY":
+            await query.edit_message_text(
+                "⚠️ OxaPay payment gateway is not configured yet.\n\n"
+                "Admin: Please set your merchant key using `/setoxapay YOUR_KEY`"
+            )
+            return
+
         order_id = str(uuid.uuid4())
         invoice_amount = amount + 0.04
         payload = {
-            "merchant": OXAPAY_MERCHANT_KEY,
+            "merchant": merchant_key,
             "amount": invoice_amount,
             "currency": "USD",
             "lifeTime": 60,
@@ -390,46 +552,14 @@ async def button_handler_inner(update: Update, context: ContextTypes.DEFAULT_TYP
                     [InlineKeyboardButton("◀ Main Menu", callback_data="main_menu")]
                 ]
                 msg = (f"💳 <b>OxaPay Payment Invoice</b>\n\n"
-                       f"Amount: <b>${amount:.2f} USD</b>\n"
+                       f"Amount to Deposit: <b>${amount:.2f} USD</b>\n"
                        f"Total Invoice (inc. fee): <b>${invoice_amount:.2f} USD</b>\n\n"
                        f"Tap the button below to complete your payment on OxaPay:")
                 await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
-                return
             else:
-                logging.warning(f"OxaPay link creation warning ({res_data.get('message')}), trying direct coin options...")
+                await query.edit_message_text(f"❌ OxaPay Error: {res_data.get('message')}\nPlease check your OXAPAY_MERCHANT_KEY in settings.")
         except Exception as e:
             logging.error(f"OxaPay link creation API Error: {e}")
-
-        # Fallback: Attempt whitelabel coins selection if standard request wasn't successful
-        try:
-            res = requests.post("https://api.oxapay.com/merchants/allowedCoins",
-                                 json={"merchant": OXAPAY_MERCHANT_KEY}, timeout=REQUEST_TIMEOUT)
-            oxa_data = res.json()
-            if oxa_data.get("result") == 100:
-                coins = oxa_data.get("allowed", [])
-                keyboard = []
-                for coin in coins:
-                    if isinstance(coin, dict):
-                        currency = coin.get("currency")
-                        network = coin.get("network")
-                        name = coin.get("name", currency)
-                        btn_text = f"{name} ({network})" if network else name
-                        cb_data = f"paycoin_{currency}_{network}" if network else f"paycoin_{currency}_none"
-                    else:
-                        btn_text = str(coin)
-                        cb_data = f"paycoin_{coin}_none"
-                    keyboard.append([InlineKeyboardButton(btn_text, callback_data=cb_data)])
-
-                if not keyboard:
-                    await query.edit_message_text("❌ No payment methods configured. Please check your OxaPay merchant settings.")
-                    return
-
-                keyboard.append([InlineKeyboardButton("◀ Cancel", callback_data="main_menu")])
-                await query.edit_message_text(f"Amount: ${amount:.2f}\nChoose your payment method:", reply_markup=InlineKeyboardMarkup(keyboard))
-            else:
-                await query.edit_message_text(f"❌ Error creating OxaPay payment link: {oxa_data.get('message')}\nPlease check your OXAPAY_MERCHANT_KEY in settings.")
-        except Exception as e:
-            logging.error(f"OxaPay API Error: {e}")
             await query.edit_message_text("❌ Error connecting to payment provider. Please try again in a moment.")
 
     elif data.startswith("paycoin_"):
@@ -453,13 +583,11 @@ async def button_handler_inner(update: Update, context: ContextTypes.DEFAULT_TYP
             await query.edit_message_text("❌ Session expired. Please try again.")
             return
 
+        merchant_key = get_oxapay_merchant_key()
         order_id = str(uuid.uuid4())
-
-        # Add 0.04 fixed fee to the invoice amount
         invoice_amount = amount + 0.04
-
         payload = {
-            "merchant": OXAPAY_MERCHANT_KEY,
+            "merchant": merchant_key,
             "amount": invoice_amount,
             "currency": "USD",
             "payCurrency": pay_currency,
@@ -481,15 +609,14 @@ async def button_handler_inner(update: Update, context: ContextTypes.DEFAULT_TYP
 
                 msg = (f"⚠️ Please send EXACTLY this amount:\n<code>{pay_amount}</code> {pay_currency}\n\n"
                        f"📬 To this {network.upper()} address (Tap to copy):\n<code>{address}</code>\n\n"
-                       f"Once you have sent the funds, click the button below to check your payment status.")
-
+                       f"Once sent, click the button below to check status.")
                 keyboard = [
                     [InlineKeyboardButton("Check Payment Status", callback_data=f"checkpay_{track_id}")],
                     [InlineKeyboardButton("◀ Main Menu", callback_data="main_menu")]
                 ]
                 await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
             else:
-                await query.edit_message_text(f"❌ Error generating address: {res_data.get('message')}\nDetails: {json.dumps(res_data)}")
+                await query.edit_message_text(f"❌ Error generating address: {res_data.get('message')}")
         except Exception as e:
             logging.error(f"OxaPay API Error: {e}")
             await query.edit_message_text("❌ Error connecting to payment provider. Please try again in a moment.")
@@ -497,8 +624,9 @@ async def button_handler_inner(update: Update, context: ContextTypes.DEFAULT_TYP
     elif data.startswith("checkpay_"):
         track_id = data.split("_")[1]
 
+        merchant_key = get_oxapay_merchant_key()
         payload = {
-            "merchant": OXAPAY_MERCHANT_KEY,
+            "merchant": merchant_key,
             "trackId": int(track_id)
         }
         try:
@@ -507,17 +635,14 @@ async def button_handler_inner(update: Update, context: ContextTypes.DEFAULT_TYP
             status = res_data.get("status")
 
             txn = get_transaction(track_id, user_id)
-
             if txn:
-                db_status, amount, method = txn
+                db_status, amount, method, product_id, qty = txn
                 if db_status == "completed":
-                    await query.edit_message_text(f"✅ This payment of ${amount} has already been credited to your account.")
-                elif status.lower() == "paid":
+                    await query.edit_message_text(f"✅ This payment of ${amount:.2f} has already been completed and processed.")
+                elif status and status.lower() == "paid":
                     mark_transaction_completed(track_id)
-                    update_user_balance(user_id, amount)
-                    new_balance = get_user_balance(user_id)
-                    await query.edit_message_text(f"✅ Payment successful! ${amount} added. New balance: ${new_balance:.2f}")
-                elif status.lower() == "expired":
+                    await fulfill_transaction(query, track_id, user_id, amount, product_id, qty)
+                elif status and status.lower() == "expired":
                     conn = sqlite3.connect(DB_PATH)
                     cursor = conn.cursor()
                     cursor.execute('UPDATE transactions SET status = ? WHERE track_id = ?', ("expired", track_id))
@@ -529,7 +654,7 @@ async def button_handler_inner(update: Update, context: ContextTypes.DEFAULT_TYP
                         [InlineKeyboardButton("Check Payment Status", callback_data=f"checkpay_{track_id}")],
                         [InlineKeyboardButton("◀ Back", callback_data="main_menu")]
                     ]
-                    await query.edit_message_text(f"⏳ Payment is still pending (Status: {status}).\nRaw details: {json.dumps(res_data)}", reply_markup=InlineKeyboardMarkup(keyboard))
+                    await query.edit_message_text(f"⏳ Payment is still pending (Status: {status}).", reply_markup=InlineKeyboardMarkup(keyboard))
             else:
                 await query.edit_message_text("❌ Transaction not found.")
         except Exception as e:
@@ -543,33 +668,24 @@ async def button_handler_inner(update: Update, context: ContextTypes.DEFAULT_TYP
             await query.edit_message_text("❌ Session expired. Please try again.")
             return
 
-        # Add a tiny unique fraction of a cent so we can match this exact deposit automatically
+        bybit_uid = get_bybit_uid()
         track_id = int(uuid.uuid4().int % 10_000_000_000)
-        unique_suffix = (track_id % 999) / 100000  # up to +0.00999
+        unique_suffix = (track_id % 999) / 100000
         unique_amount = round(amount + unique_suffix, 5)
 
         create_transaction(track_id, user_id, amount, "pending", "bybit")
         context.user_data['bybit_unique_amount'] = unique_amount
 
-        safe_uid = html_lib.escape(str(BYBIT_UID))
-        msg = (f"📬 Send EXACTLY this amount via Bybit 'Send to UID' (internal transfer, no fees):\n\n"
+        safe_uid = html_lib.escape(str(bybit_uid))
+        msg = (f"📬 Send EXACTLY this amount via Bybit 'Send to UID':\n\n"
                f"<code>{unique_amount}</code> USDT\n\n"
                f"To this Bybit UID:\n<code>{safe_uid}</code>\n\n"
-               f"⚠️ The amount must match exactly (including the small decimals) so it can be verified automatically.\n\n"
                f"Once sent, tap the button below.")
         keyboard = [
             [InlineKeyboardButton("✅ I've Sent It — Check Now", callback_data=f"checkbybit_{track_id}")],
             [InlineKeyboardButton("◀ Main Menu", callback_data="main_menu")]
         ]
-        try:
-            await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
-        except Exception as e:
-            logging.error(f"Failed to show Bybit payment instructions: {e}")
-            plain_msg = (f"Send EXACTLY this amount via Bybit 'Send to UID':\n\n"
-                         f"{unique_amount} USDT\n\n"
-                         f"To this Bybit UID:\n{BYBIT_UID}\n\n"
-                         f"The amount must match exactly. Once sent, tap the button below.")
-            await query.edit_message_text(plain_msg, reply_markup=InlineKeyboardMarkup(keyboard))
+        await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
 
     elif data.startswith("checkbybit_"):
         track_id = data.split("_", 1)[1]
@@ -579,9 +695,9 @@ async def button_handler_inner(update: Update, context: ContextTypes.DEFAULT_TYP
             await query.answer("❌ Transaction not found.", show_alert=True)
             return
 
-        db_status, amount, method = txn
+        db_status, amount, method, product_id, qty = txn
         if db_status == "completed":
-            await query.edit_message_text(f"✅ This payment of ${amount} has already been credited to your account.")
+            await query.edit_message_text(f"✅ This payment of ${amount:.2f} has already been completed.")
             return
 
         unique_amount = context.user_data.get('bybit_unique_amount')
@@ -589,24 +705,21 @@ async def button_handler_inner(update: Update, context: ContextTypes.DEFAULT_TYP
             await query.answer("❌ Session expired. Please start a new Bybit deposit.", show_alert=True)
             return
 
-        if not BYBIT_API_KEY or not BYBIT_API_SECRET:
-            await query.answer("❌ Bybit payments aren't configured yet.", show_alert=True)
+        if not get_bybit_api_key() or not get_bybit_api_secret():
+            await query.answer("❌ Bybit API verification isn't configured yet by Admin.", show_alert=True)
             return
 
         found = find_matching_bybit_deposit(unique_amount)
         if found:
             mark_transaction_completed(track_id)
-            update_user_balance(user_id, amount)
-            new_balance = get_user_balance(user_id)
-            await query.edit_message_text(f"✅ Payment successful! ${amount} added. New balance: ${new_balance:.2f}")
+            await fulfill_transaction(query, track_id, user_id, amount, product_id, qty)
         else:
             keyboard = [
                 [InlineKeyboardButton("✅ I've Sent It — Check Now", callback_data=f"checkbybit_{track_id}")],
                 [InlineKeyboardButton("◀ Main Menu", callback_data="main_menu")]
             ]
             await query.edit_message_text(
-                f"⏳ We haven't seen that deposit yet. Bybit transfers are usually instant — "
-                f"double check the amount was exact ({unique_amount} USDT) and try again in a minute.",
+                f"⏳ We haven't seen that deposit yet. Double check the amount was exact ({unique_amount} USDT) and try again in a minute.",
                 reply_markup=InlineKeyboardMarkup(keyboard)
             )
 
@@ -635,8 +748,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
         context.user_data['awaiting_quantity'] = False
         context.user_data['cur_qty'] = qty
-        msg, markup = build_confirm_page(product_id, qty)
-        await update.message.reply_text(msg, reply_markup=markup)
+        msg, markup = build_confirm_page(product_id, qty, update.effective_user.id)
+        await update.message.reply_text(msg, reply_markup=markup, parse_mode="HTML")
         return
 
     if context.user_data.get('awaiting_amount'):
@@ -672,7 +785,7 @@ async def addstock(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             "/addstock hotmail\n"
             "mail1@hotmail.com|pass123|token1\n"
             "mail2@hotmail.com|pass456|token2\n\n"
-            "• OR just send /addstock <product_id> alone, then upload a .txt file (one code per line) as your next message."
+            "• OR send /addstock <product_id> alone, then upload a .txt file as your next message."
         )
         return
 
@@ -684,7 +797,6 @@ async def addstock(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     codes = [line.strip() for line in lines[1:] if line.strip()]
 
     if not codes:
-        # No codes typed in the message — wait for a .txt file upload instead
         context.user_data['awaiting_stock_file'] = product_id
         await update.message.reply_text(
             f"📎 Okay, now send me a .txt file for '{product_id}' — one code/account per line."
@@ -694,6 +806,60 @@ async def addstock(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     add_inventory_items(product_id, codes)
     new_stock = get_product_stock(product_id)
     await update.message.reply_text(f"✅ Added {len(codes)} items to '{product_id}'. Total stock is now {new_stock}.")
+
+async def setoxapay(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message.from_user.id != ADMIN_ID:
+        return
+    if not context.args:
+        await update.message.reply_text("❌ Usage: /setoxapay <your_merchant_key>")
+        return
+    key = context.args[0].strip()
+    set_setting("OXAPAY_MERCHANT_KEY", key)
+    await update.message.reply_text(f"✅ OxaPay Merchant Key updated successfully!")
+
+async def setbybit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message.from_user.id != ADMIN_ID:
+        return
+    if not context.args:
+        await update.message.reply_text("❌ Usage: /setbybit <your_bybit_uid>")
+        return
+    uid = context.args[0].strip()
+    set_setting("BYBIT_UID", uid)
+    await update.message.reply_text(f"✅ Bybit UID updated to '{uid}' successfully!")
+
+async def setbybitkeys(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message.from_user.id != ADMIN_ID:
+        return
+    if len(context.args) < 2:
+        await update.message.reply_text("❌ Usage: /setbybitkeys <api_key> <api_secret>")
+        return
+    api_key = context.args[0].strip()
+    api_secret = context.args[1].strip()
+    set_setting("BYBIT_API_KEY", api_key)
+    set_setting("BYBIT_API_SECRET", api_secret)
+    await update.message.reply_text("✅ Bybit API Keys updated successfully!")
+
+async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message.from_user.id != ADMIN_ID:
+        return
+    ox_key = get_oxapay_merchant_key()
+    by_uid = get_bybit_uid()
+    by_key = get_bybit_api_key()
+
+    ox_status = "✅ Set" if ox_key and ox_key != "YOUR_OXAPAY_MERCHANT_KEY" else "❌ Not Configured"
+    by_uid_status = f"✅ Set ({by_uid})" if by_uid and by_uid != "YOUR_BYBIT_UID_HERE" else "❌ Not Configured"
+    by_api_status = "✅ Set" if by_key else "❌ Not Configured"
+
+    msg = (f"⚙️ <b>Bot Settings</b>\n\n"
+           f"OxaPay Merchant Key: {ox_status}\n"
+           f"Bybit UID: {by_uid_status}\n"
+           f"Bybit API Key: {by_api_status}\n\n"
+           f"<b>Admin Commands:</b>\n"
+           f"• <code>/setoxapay &lt;key&gt;</code>\n"
+           f"• <code>/setbybit &lt;uid&gt;</code>\n"
+           f"• <code>/setbybitkeys &lt;api_key&gt; &lt;api_secret&gt;</code>\n"
+           f"• <code>/addstock &lt;product_id&gt;</code>")
+    await update.message.reply_text(msg, parse_mode="HTML")
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message.from_user.id != ADMIN_ID:
@@ -759,10 +925,15 @@ async def web_app_data_handler(update: Update, context: ContextTypes.DEFAULT_TYP
 # --- MAIN RUNNER ---
 def main() -> None:
     init_db()
-    application = Application.builder().token(BOT_TOKEN).build()
+    token = get_bot_token()
+    application = Application.builder().token(token).build()
 
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("addstock", addstock))
+    application.add_handler(CommandHandler("setoxapay", setoxapay))
+    application.add_handler(CommandHandler("setbybit", setbybit))
+    application.add_handler(CommandHandler("setbybitkeys", setbybitkeys))
+    application.add_handler(CommandHandler("settings", settings_command))
     application.add_handler(CallbackQueryHandler(button_handler))
     application.add_handler(MessageHandler(filters.StatusUpdate.WEB_APP_DATA, web_app_data_handler))
     application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
