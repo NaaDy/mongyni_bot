@@ -64,6 +64,54 @@ PRODUCTS = {
     },
 }
 
+# --- MULTI-LANGUAGE DICTIONARY ---
+STRINGS = {
+    "ar": {
+        "welcome": "مرحباً بك في متجر Mongyni Store!\n\nمعرفك: <code>{user_id}</code>\nرصيدك: <b>${balance:.2f}</b>\n\nيرجى اختيار المنتج المطلوب أدناه:",
+        "add_funds": "💳 إضافة رصيد",
+        "support": "💬 الدعم الفني",
+        "my_orders": "📜 طلباتي",
+        "referral": "👥 رابط الإحالة",
+        "lang_switch": "🌐 الإنجليزية / English",
+        "stock": "المخزون",
+        "out_of_stock": "عذراً، هذا المنتج غير متوفر حالياً.",
+        "quantity_prompt": "✏️ كم العدد الذي ترغب بشرائه؟ يرجى إرسال رقم.",
+        "insufficient_balance": "❌ <b>رصيدك غير كافٍ</b> (${balance:.2f}). المطلوب: <b>${total:.2f}</b>.",
+        "purchase_success": "✅ اكتمل الشراء بنجاح! {qty}x {name} — تم خصم ${total:.2f}.\nالرصيد المتبقي: ${balance:.2f}\n\nإليك بيانات الحسابات:\n{delivery}",
+        "cancel": "◀ إلغاء",
+        "main_menu": "◀ القائمة الرئيسية",
+        "apply_coupon": "🎟️ استخدام كود خصم",
+        "coupon_prompt": "✏️ يرجى كتابة كود الخصم وإرساله في الشات:",
+        "coupon_applied": "✅ تم تطبيق كود الخصم بنجاح!",
+        "coupon_invalid": "❌ كود الخصم غير صالح أو انتهت الكمية المتاحة منه.",
+        "ref_msg": "👥 <b>نظام الدعوة والإحالة</b>\n\nرابط الدعوة الخاص بك:\n<code>{ref_link}</code>\n\nاحصل على <b>5%</b> رصيد مجاني من كل عملية شراء أو شحن يقوم بها الأشخاص الذين تدعوهم!\n\n• إجمالي المدعوين: <b>{invited_count}</b>\n• أرباحك من الإحالات: <b>${ref_earnings:.2f}</b>",
+        "my_orders_title": "📜 <b>سجل طلباتك السابقة:</b>\n\n",
+        "no_orders": "ℹ️ ليس لديك أي طلبات سابقة حتى الآن."
+    },
+    "en": {
+        "welcome": "Welcome to Mongyni Store!\n\nYour ID: <code>{user_id}</code>\nYour Balance: <b>${balance:.2f}</b>\n\nPlease select a product below:",
+        "add_funds": "💳 Add Funds",
+        "support": "💬 Support",
+        "my_orders": "📜 My Orders",
+        "referral": "👥 Referral Link",
+        "lang_switch": "🌐 العربية / Arabic",
+        "stock": "Stock",
+        "out_of_stock": "Sorry, this product is currently out of stock.",
+        "quantity_prompt": "✏️ How many do you want? Please type a number.",
+        "insufficient_balance": "❌ <b>Insufficient Balance</b> (${balance:.2f}). Total required: <b>${total:.2f}</b>.",
+        "purchase_success": "✅ Purchase successful! {qty}x {name} — ${total:.2f} deducted.\nRemaining balance: ${balance:.2f}\n\nHere are your details:\n{delivery}",
+        "cancel": "◀ Cancel",
+        "main_menu": "◀ Main Menu",
+        "apply_coupon": "🎟️ Apply Promo Code",
+        "coupon_prompt": "✏️ Please type and send your promo code in chat:",
+        "coupon_applied": "✅ Promo code applied successfully!",
+        "coupon_invalid": "❌ Promo code is invalid or usage limit reached.",
+        "ref_msg": "👥 <b>Referral & Affiliate System</b>\n\nYour Unique Referral Link:\n<code>{ref_link}</code>\n\nEarn <b>5%</b> free balance rewards on every deposit or purchase made by people you invite!\n\n• Total Invited Users: <b>{invited_count}</b>\n• Referral Earnings: <b>${ref_earnings:.2f}</b>",
+        "my_orders_title": "📜 <b>Your Purchase History:</b>\n\n",
+        "no_orders": "ℹ️ You have no previous orders yet."
+    }
+}
+
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 
 # --- OXAPAY SAFE REQUEST HELPER ---
@@ -78,14 +126,16 @@ def oxapay_post_request(endpoint, payload):
     except Exception as e:
         return False, 0, f"Network error: {str(e)}"
 
-# --- DATABASE SETUP & DYNAMIC SETTINGS ---
+# --- DATABASE SETUP & MIGRATIONS ---
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    cursor.execute('''CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, balance REAL)''')
+    cursor.execute('''CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, balance REAL, lang TEXT DEFAULT 'ar', referred_by INTEGER DEFAULT 0, ref_earnings REAL DEFAULT 0.0)''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS inventory (id INTEGER PRIMARY KEY AUTOINCREMENT, product_id TEXT, data TEXT)''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS transactions (track_id INTEGER PRIMARY KEY, user_id INTEGER, amount REAL, status TEXT, method TEXT, product_id TEXT, qty INTEGER, extra_credit REAL)''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)''')
+    cursor.execute('''CREATE TABLE IF NOT EXISTS coupons (code TEXT PRIMARY KEY, discount_type TEXT, discount_value REAL, uses_left INTEGER)''')
+    cursor.execute('''CREATE TABLE IF NOT EXISTS orders (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, product_id TEXT, qty INTEGER, total_price REAL, items_delivered TEXT, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP)''')
 
     cursor.execute("PRAGMA table_info(transactions)")
     cols = [column[1] for column in cursor.fetchall()]
@@ -97,6 +147,15 @@ def init_db():
         cursor.execute('ALTER TABLE transactions ADD COLUMN qty INTEGER')
     if 'extra_credit' not in cols:
         cursor.execute('ALTER TABLE transactions ADD COLUMN extra_credit REAL')
+
+    cursor.execute("PRAGMA table_info(users)")
+    user_cols = [c[1] for c in cursor.fetchall()]
+    if 'lang' not in user_cols:
+        cursor.execute("ALTER TABLE users ADD COLUMN lang TEXT DEFAULT 'ar'")
+    if 'referred_by' not in user_cols:
+        cursor.execute("ALTER TABLE users ADD COLUMN referred_by INTEGER DEFAULT 0")
+    if 'ref_earnings' not in user_cols:
+        cursor.execute("ALTER TABLE users ADD COLUMN ref_earnings REAL DEFAULT 0.0")
 
     conn.commit()
     conn.close()
@@ -141,6 +200,21 @@ def get_support_url():
     username = get_support_username()
     return f"https://t.me/{username}"
 
+def get_user_lang(user_id):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute('SELECT lang FROM users WHERE user_id = ?', (user_id,))
+    row = cursor.fetchone()
+    conn.close()
+    return row[0] if row and row[0] else 'ar'
+
+def set_user_lang(user_id, lang):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute('UPDATE users SET lang = ? WHERE user_id = ?', (lang, user_id))
+    conn.commit()
+    conn.close()
+
 def get_user_balance(user_id):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
@@ -173,6 +247,110 @@ def set_user_balance_exact(user_id, new_balance):
     conn.commit()
     conn.close()
 
+def register_user(user_id, referred_by=0):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute('SELECT user_id FROM users WHERE user_id = ?', (user_id,))
+    if cursor.fetchone() is None:
+        cursor.execute('INSERT INTO users (user_id, balance, referred_by) VALUES (?, 0.0, ?)', (user_id, referred_by))
+        conn.commit()
+    conn.close()
+
+def process_referral_reward(user_id, purchase_or_deposit_amount, bot_context=None):
+    if purchase_or_deposit_amount <= 0:
+        return
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute('SELECT referred_by FROM users WHERE user_id = ?', (user_id,))
+    row = cursor.fetchone()
+    if row and row[0] and row[0] != user_id:
+        referrer_id = row[0]
+        reward = round(purchase_or_deposit_amount * 0.05, 4)  # 5% referral commission
+        if reward > 0:
+            cursor.execute('UPDATE users SET balance = balance + ?, ref_earnings = ref_earnings + ? WHERE user_id = ?', (reward, reward, referrer_id))
+            conn.commit()
+            conn.close()
+            if bot_context:
+                try:
+                    bot_context.bot.send_message(
+                        chat_id=referrer_id,
+                        text=f"🎉 <b>Referral Reward!</b>\nYou earned <b>${reward:.2f}</b> from a friend's purchase/deposit!",
+                        parse_mode="HTML"
+                    )
+                except Exception:
+                    pass
+            return
+    conn.close()
+
+def get_referral_stats(user_id):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute('SELECT COUNT(*) FROM users WHERE referred_by = ?', (user_id,))
+    invited_count = cursor.fetchone()[0]
+    cursor.execute('SELECT ref_earnings FROM users WHERE user_id = ?', (user_id,))
+    row = cursor.fetchone()
+    ref_earnings = row[0] if row and row[0] else 0.0
+    conn.close()
+    return invited_count, ref_earnings
+
+def record_completed_order(user_id, product_id, qty, total_price, items_delivered):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    delivery_str = "\n".join(items_delivered) if isinstance(items_delivered, list) else str(items_delivered)
+    cursor.execute('INSERT INTO orders (user_id, product_id, qty, total_price, items_delivered) VALUES (?, ?, ?, ?, ?)',
+                   (user_id, product_id, qty, total_price, delivery_str))
+    conn.commit()
+    conn.close()
+
+def get_user_orders(user_id, limit=10):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute('SELECT product_id, qty, total_price, items_delivered, timestamp FROM orders WHERE user_id = ? ORDER BY id DESC LIMIT ?', (user_id, limit))
+    rows = cursor.fetchall()
+    conn.close()
+    return rows
+
+# --- COUPON HELPERS ---
+def add_coupon(code, discount_type, discount_value, uses_left):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute('INSERT OR REPLACE INTO coupons (code, discount_type, discount_value, uses_left) VALUES (?, ?, ?, ?)',
+                   (code.upper(), discount_type, discount_value, uses_left))
+    conn.commit()
+    conn.close()
+
+def get_coupon(code):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute('SELECT discount_type, discount_value, uses_left FROM coupons WHERE code = ?', (code.upper(),))
+    row = cursor.fetchone()
+    conn.close()
+    return row
+
+def use_coupon(code):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute('UPDATE coupons SET uses_left = uses_left - 1 WHERE code = ? AND uses_left > 0', (code.upper(),))
+    conn.commit()
+    conn.close()
+
+def list_coupons():
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute('SELECT code, discount_type, discount_value, uses_left FROM coupons')
+    rows = cursor.fetchall()
+    conn.close()
+    return rows
+
+def delete_coupon(code):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute('DELETE FROM coupons WHERE code = ?', (code.upper(),))
+    rowcount = cursor.rowcount
+    conn.commit()
+    conn.close()
+    return rowcount
+
 def get_user_info(user_id):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
@@ -200,7 +378,7 @@ def get_user_info(user_id):
         "recent_txs": recent_txs
     }
 
-def get_all_users_list(limit=25):
+def get_all_users_list(limit=50):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute('SELECT user_id, balance FROM users ORDER BY balance DESC LIMIT ?', (limit,))
@@ -248,6 +426,20 @@ def take_inventory_items(product_id, qty):
     conn.commit()
     conn.close()
     return [row[1] for row in rows]
+
+def check_and_notify_low_stock(product_id, bot_context=None):
+    stock = get_product_stock(product_id)
+    if stock <= 5 and bot_context:
+        info = PRODUCTS.get(product_id, {})
+        name = info.get("name", product_id)
+        try:
+            bot_context.bot.send_message(
+                chat_id=ADMIN_ID,
+                text=f"⚠️ <b>LOW STOCK ALERT!</b>\n\nProduct: <b>{name}</b>\nRemaining Stock: <code>{stock}</code> items!\nRun <code>/addstock {product_id}</code> to replenish.",
+                parse_mode="HTML"
+            )
+        except Exception as e:
+            logging.warning(f"Could not send low stock alert to admin: {e}")
 
 def create_transaction(track_id, user_id, amount, status, method, product_id=None, qty=0, extra_credit=0.0):
     conn = sqlite3.connect(DB_PATH)
@@ -316,47 +508,72 @@ def find_matching_bybit_deposit(expected_amount, tolerance=0.000001):
             return True
     return False
 
-# --- BOT COMMANDS ---
+# --- BOT COMMANDS & UI ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
+    
+    # Process Referral Link if present
+    referred_by = 0
+    if context.args and context.args[0].startswith("ref_"):
+        try:
+            referred_by = int(context.args[0].split("_")[1])
+        except ValueError:
+            referred_by = 0
+
+    register_user(user_id, referred_by=referred_by)
     balance = get_user_balance(user_id)
+    lang = get_user_lang(user_id)
+    s = STRINGS[lang]
 
     keyboard = []
     for product_id, info in PRODUCTS.items():
         stock = get_product_stock(product_id)
         icon = "🔴" if stock == 0 else ("🔴" if stock < 10 else ("🟠" if stock <= 50 else "🟢"))
-        btn_text = f"{icon} {info['name']} - ${info['price']:.2f} (Stock: {stock})"
+        btn_text = f"{icon} {info['name']} - ${info['price']:.2f} ({s['stock']}: {stock})"
         keyboard.append([InlineKeyboardButton(btn_text, callback_data=f"prod_{product_id}")])
 
     support_url = get_support_url()
     keyboard.append([
-        InlineKeyboardButton("💳 Add Funds", callback_data="menu_addfunds"),
-        InlineKeyboardButton("💬 Support", url=support_url)
+        InlineKeyboardButton(s["add_funds"], callback_data="menu_addfunds"),
+        InlineKeyboardButton(s["my_orders"], callback_data="menu_myorders")
+    ])
+    keyboard.append([
+        InlineKeyboardButton(s["referral"], callback_data="menu_referral"),
+        InlineKeyboardButton(s["support"], url=support_url)
+    ])
+    keyboard.append([
+        InlineKeyboardButton(s["lang_switch"], callback_data="toggle_lang")
     ])
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    msg = f"Welcome to Mongyni Store!\n\nYour ID: {user_id}\nYour Balance: ${balance:.2f}\n\nPlease select a product below:"
+    msg = s["welcome"].format(user_id=user_id, balance=balance)
     if update.callback_query:
-        await update.callback_query.edit_message_text(msg, reply_markup=reply_markup)
+        await update.callback_query.edit_message_text(msg, reply_markup=reply_markup, parse_mode="HTML")
     else:
-        await update.message.reply_text(msg, reply_markup=reply_markup)
+        await update.message.reply_text(msg, reply_markup=reply_markup, parse_mode="HTML")
 
-def build_product_intro(product_id):
+def build_product_intro(product_id, lang="ar"):
     info = PRODUCTS[product_id]
     stock = get_product_stock(product_id)
+    s = STRINGS[lang]
     msg = (f"📦 {info['name']}\n\n"
            f"{info['description']}\n\n"
            f"Price: ${info['price']:.2f} each\n"
-           f"In stock: {stock}\n\n"
-           f"✏️ How many do you want? Please type a number.")
+           f"{s['stock']}: {stock}\n\n"
+           f"{s['quantity_prompt']}")
     keyboard = [
-        [InlineKeyboardButton("◀ Cancel", callback_data="main_menu")],
+        [InlineKeyboardButton(s["cancel"], callback_data="main_menu")],
     ]
     return msg, InlineKeyboardMarkup(keyboard)
 
 def build_confirm_page(product_id, qty, user_id):
     info = PRODUCTS[product_id]
+    lang = get_user_lang(user_id)
+    s = STRINGS[lang]
+
     total = info["price"] * qty
+    discount = context_user_data_discount = 0.0
+
     balance = get_user_balance(user_id)
     support_url = get_support_url()
 
@@ -374,21 +591,22 @@ def build_confirm_page(product_id, qty, user_id):
     keyboard.append([InlineKeyboardButton("💠 Direct Pay via Crypto (OxaPay)", callback_data=f"payprod_oxapay_{product_id}_{qty}")])
     keyboard.append([InlineKeyboardButton("🅱️ Direct Pay via Bybit UID", callback_data=f"payprod_bybit_{product_id}_{qty}")])
     keyboard.append([
-        InlineKeyboardButton("💳 Add Funds", callback_data="menu_addfunds"),
-        InlineKeyboardButton("💬 Support", url=support_url)
+        InlineKeyboardButton(s["add_funds"], callback_data="menu_addfunds"),
+        InlineKeyboardButton(s["support"], url=support_url)
     ])
-    keyboard.append([InlineKeyboardButton("◀ Cancel", callback_data="main_menu")])
+    keyboard.append([InlineKeyboardButton(s["cancel"], callback_data="main_menu")])
 
     return msg, InlineKeyboardMarkup(keyboard)
 
-def build_payment_method_page(amount):
+def build_payment_method_page(amount, lang="ar"):
     support_url = get_support_url()
+    s = STRINGS[lang]
     msg = f"Amount to Deposit: ${amount:.2f}\n\nHow would you like to pay?"
     keyboard = [
         [InlineKeyboardButton("💠 Pay with Crypto (OxaPay)", callback_data="paymethod_oxapay")],
         [InlineKeyboardButton("🅱️ Pay via Bybit UID", callback_data="paymethod_bybit")],
-        [InlineKeyboardButton("💬 Need Support?", url=support_url)],
-        [InlineKeyboardButton("◀ Cancel", callback_data="main_menu")],
+        [InlineKeyboardButton(s["support"], url=support_url)],
+        [InlineKeyboardButton(s["cancel"], callback_data="main_menu")],
     ]
     return msg, InlineKeyboardMarkup(keyboard)
 
@@ -408,21 +626,26 @@ def build_oxapay_coin_menu(prefix, details_header):
     ]
     return msg, InlineKeyboardMarkup(keyboard)
 
-async def fulfill_transaction(query_or_message, track_id, user_id, amount, product_id, qty, extra_credit=0.0):
+async def fulfill_transaction(query_or_message, track_id, user_id, amount, product_id, qty, extra_credit=0.0, bot_context=None):
     info = PRODUCTS.get(product_id)
+    lang = get_user_lang(user_id)
+    s = STRINGS[lang]
+
+    process_referral_reward(user_id, amount, bot_context)
+
     if product_id and qty > 0 and info:
         items = take_inventory_items(product_id, qty)
         if items is not None:
+            record_completed_order(user_id, product_id, qty, amount, items)
+            check_and_notify_low_stock(product_id, bot_context)
+
             delivery_text = "\n".join(items)
-            msg = (f"✅ Payment successful & order delivered!\n\n"
-                   f"Product: <b>{qty}x {info['name']}</b>\n"
-                   f"Amount Paid: <b>${amount:.2f}</b>\n\n")
+            msg = s["purchase_success"].format(qty=qty, name=info["name"], total=amount, balance=get_user_balance(user_id), delivery=delivery_text)
             if extra_credit and extra_credit > 0:
                 update_user_balance(user_id, extra_credit)
                 new_bal = get_user_balance(user_id)
-                msg += f"💵 <b>${extra_credit:.2f}</b> extra has been credited to your balance (New Balance: ${new_bal:.2f}).\n\n"
+                msg += f"\n\n💵 <b>${extra_credit:.2f}</b> extra credited to balance (New Balance: ${new_bal:.2f})."
             
-            msg += f"Here are your account details:\n{delivery_text}"
             if hasattr(query_or_message, 'edit_message_text'):
                 await query_or_message.edit_message_text(msg, parse_mode="HTML")
             else:
@@ -433,7 +656,7 @@ async def fulfill_transaction(query_or_message, track_id, user_id, amount, produ
         update_user_balance(user_id, amount)
         new_bal = get_user_balance(user_id)
         msg = (f"✅ Payment of ${amount:.2f} received!\n\n"
-               f"⚠️ Unfortunately, {info['name']} went out of stock. ${amount:.2f} has been credited to your balance.\n"
+               f"⚠️ {info['name']} went out of stock. ${amount:.2f} credited to your balance.\n"
                f"New Balance: ${new_bal:.2f}")
         if hasattr(query_or_message, 'edit_message_text'):
             await query_or_message.edit_message_text(msg)
@@ -469,13 +692,39 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 async def button_handler_inner(update: Update, context: ContextTypes.DEFAULT_TYPE, query) -> None:
     data = query.data
     user_id = query.from_user.id
+    lang = get_user_lang(user_id)
+    s = STRINGS[lang]
 
     if data == "main_menu":
         context.user_data['awaiting_quantity'] = False
         await start(update, context)
 
-    elif data == "noop":
-        return
+    elif data == "toggle_lang":
+        new_lang = "en" if lang == "ar" else "ar"
+        set_user_lang(user_id, new_lang)
+        await start(update, context)
+
+    elif data == "menu_myorders":
+        orders = get_user_orders(user_id)
+        if not orders:
+            await query.edit_message_text(s["no_orders"], reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(s["main_menu"], callback_data="main_menu")]]))
+            return
+
+        msg = s["my_orders_title"]
+        for o_pid, o_qty, o_total, o_del, o_time in orders:
+            p_name = PRODUCTS.get(o_pid, {}).get("name", o_pid)
+            msg += f"📦 <b>{o_qty}x {p_name}</b> — ${o_total:.2f}\n📅 {o_time}\n<code>{o_del[:100]}...</code>\n───────────────\n"
+
+        keyboard = [[InlineKeyboardButton(s["main_menu"], callback_data="main_menu")]]
+        await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
+
+    elif data == "menu_referral":
+        bot_obj = await context.bot.get_me()
+        ref_link = f"https://t.me/{bot_obj.username}?start=ref_{user_id}"
+        inv_count, ref_earn = get_referral_stats(user_id)
+        msg = s["ref_msg"].format(ref_link=ref_link, invited_count=inv_count, ref_earnings=ref_earn)
+        keyboard = [[InlineKeyboardButton(s["main_menu"], callback_data="main_menu")]]
+        await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
 
     elif data.startswith("prod_"):
         product_id = data.split("_", 1)[1]
@@ -484,11 +733,11 @@ async def button_handler_inner(update: Update, context: ContextTypes.DEFAULT_TYP
             return
         stock = get_product_stock(product_id)
         if stock <= 0:
-            await query.answer("❌ Sorry, this product is currently out of stock.", show_alert=True)
+            await query.answer(s["out_of_stock"], show_alert=True)
             return
         context.user_data['cur_product'] = product_id
         context.user_data['awaiting_quantity'] = True
-        msg, markup = build_product_intro(product_id)
+        msg, markup = build_product_intro(product_id, lang)
         await query.edit_message_text(msg, reply_markup=markup)
 
     elif data.startswith("confirm_"):
@@ -509,12 +758,11 @@ async def button_handler_inner(update: Update, context: ContextTypes.DEFAULT_TYP
             keyboard = [
                 [InlineKeyboardButton("💠 Pay directly via OxaPay", callback_data=f"payprod_oxapay_{product_id}_{qty}")],
                 [InlineKeyboardButton("🅱️ Pay directly via Bybit UID", callback_data=f"payprod_bybit_{product_id}_{qty}")],
-                [InlineKeyboardButton("💳 Add Funds", callback_data="menu_addfunds"), InlineKeyboardButton("💬 Support", url=support_url)],
-                [InlineKeyboardButton("◀ Main Menu", callback_data="main_menu")],
+                [InlineKeyboardButton(s["add_funds"], callback_data="menu_addfunds"), InlineKeyboardButton(s["support"], url=support_url)],
+                [InlineKeyboardButton(s["main_menu"], callback_data="main_menu")],
             ]
             await query.edit_message_text(
-                f"❌ <b>Insufficient Balance</b> (${balance:.2f}). Total required: <b>${total_price:.2f}</b>.\n\n"
-                f"Choose a payment option below to complete your order:",
+                s["insufficient_balance"].format(balance=balance, total=total_price),
                 reply_markup=InlineKeyboardMarkup(keyboard),
                 parse_mode="HTML"
             )
@@ -523,19 +771,20 @@ async def button_handler_inner(update: Update, context: ContextTypes.DEFAULT_TYP
         items = take_inventory_items(product_id, qty)
         if items is not None:
             update_user_balance(user_id, -total_price)
+            record_completed_order(user_id, product_id, qty, total_price, items)
+            process_referral_reward(user_id, total_price, context)
+            check_and_notify_low_stock(product_id, context)
+
             new_balance = get_user_balance(user_id)
             delivery_text = "\n".join(items)
-            await query.edit_message_text(
-                f"✅ Purchase successful! {qty}x {info['name']} — ${total_price:.2f} deducted.\n"
-                f"Remaining balance: ${new_balance:.2f}\n\n"
-                f"Here are your details:\n{delivery_text}"
-            )
+            msg = s["purchase_success"].format(qty=qty, name=info["name"], total=total_price, balance=new_balance, delivery=delivery_text)
+            await query.edit_message_text(msg, parse_mode="HTML")
             context.user_data.pop('cur_product', None)
             context.user_data.pop('cur_qty', None)
         else:
-            await query.answer("❌ Sorry, not enough stock for that quantity.", show_alert=True)
+            await query.answer(s["out_of_stock"], show_alert=True)
 
-    # --- Direct Product OxaPay Pay (Coin Selection) ---
+    # --- Direct Product OxaPay Pay ---
     elif data.startswith("payprod_oxapay_"):
         parts = data.split("_")
         product_id = parts[2]
@@ -622,8 +871,8 @@ async def button_handler_inner(update: Update, context: ContextTypes.DEFAULT_TYP
             support_url = get_support_url()
             keyboard = [
                 [InlineKeyboardButton("Check Payment Status", callback_data=f"checkpay_{track_id}")],
-                [InlineKeyboardButton("💬 Need Support?", url=support_url)],
-                [InlineKeyboardButton("◀ Main Menu", callback_data="main_menu")]
+                [InlineKeyboardButton(s["support"], url=support_url)],
+                [InlineKeyboardButton(s["main_menu"], callback_data="main_menu")]
             ]
             await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
         else:
@@ -658,15 +907,15 @@ async def button_handler_inner(update: Update, context: ContextTypes.DEFAULT_TYP
                f"Once sent, tap the button below to receive your product immediately.")
         keyboard = [
             [InlineKeyboardButton("✅ I've Sent It — Check Now", callback_data=f"checkbybit_{track_id}")],
-            [InlineKeyboardButton("💬 Contact Support", url=support_url)],
-            [InlineKeyboardButton("◀ Main Menu", callback_data="main_menu")]
+            [InlineKeyboardButton(s["support"], url=support_url)],
+            [InlineKeyboardButton(s["main_menu"], callback_data="main_menu")]
         ]
         await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
 
     elif data == "menu_addfunds":
         context.user_data['awaiting_amount'] = True
         keyboard = [
-            [InlineKeyboardButton("◀ Cancel", callback_data="cancel_addfunds")]
+            [InlineKeyboardButton(s["cancel"], callback_data="cancel_addfunds")]
         ]
         await query.edit_message_text("Please type and send the amount you want to add (e.g. 5 or 2.50):", reply_markup=InlineKeyboardMarkup(keyboard))
 
@@ -750,8 +999,8 @@ async def button_handler_inner(update: Update, context: ContextTypes.DEFAULT_TYP
                    f"⚠️ Send EXACTLY <code>{pay_amount}</code> {pay_currency} to the address above.\nOnce sent, click the button below to check status.")
             keyboard = [
                 [InlineKeyboardButton("Check Payment Status", callback_data=f"checkpay_{track_id}")],
-                [InlineKeyboardButton("💬 Need Support?", url=support_url)],
-                [InlineKeyboardButton("◀ Main Menu", callback_data="main_menu")]
+                [InlineKeyboardButton(s["support"], url=support_url)],
+                [InlineKeyboardButton(s["main_menu"], callback_data="main_menu")]
             ]
             await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
         else:
@@ -777,7 +1026,7 @@ async def button_handler_inner(update: Update, context: ContextTypes.DEFAULT_TYP
                     await query.edit_message_text(f"✅ This payment of ${amount:.2f} has already been completed and processed.")
                 elif status in ("paid", "completed", "success", "paid_over", "underpaid"):
                     mark_transaction_completed(track_id)
-                    await fulfill_transaction(query, track_id, user_id, amount, product_id, qty, extra_credit=extra_credit)
+                    await fulfill_transaction(query, track_id, user_id, amount, product_id, qty, extra_credit=extra_credit, bot_context=context)
                 elif status == "expired":
                     conn = sqlite3.connect(DB_PATH)
                     cursor = conn.cursor()
@@ -789,8 +1038,8 @@ async def button_handler_inner(update: Update, context: ContextTypes.DEFAULT_TYP
                     support_url = get_support_url()
                     keyboard = [
                         [InlineKeyboardButton("Check Payment Status", callback_data=f"checkpay_{track_id}")],
-                        [InlineKeyboardButton("💬 Need Support?", url=support_url)],
-                        [InlineKeyboardButton("◀ Back", callback_data="main_menu")]
+                        [InlineKeyboardButton(s["support"], url=support_url)],
+                        [InlineKeyboardButton(s["main_menu"], callback_data="main_menu")]
                     ]
                     status_display = res_data.get("status", "Pending")
                     msg_text = f"⏳ Payment is still pending (Status: {status_display}).\n\nIf you have already sent the funds, please wait a few seconds for blockchain confirmation and tap Check again."
@@ -830,8 +1079,8 @@ async def button_handler_inner(update: Update, context: ContextTypes.DEFAULT_TYP
                f"Once sent, tap the button below.")
         keyboard = [
             [InlineKeyboardButton("✅ I've Sent It — Check Now", callback_data=f"checkbybit_{track_id}")],
-            [InlineKeyboardButton("💬 Contact Support", url=support_url)],
-            [InlineKeyboardButton("◀ Main Menu", callback_data="main_menu")]
+            [InlineKeyboardButton(s["support"], url=support_url)],
+            [InlineKeyboardButton(s["main_menu"], callback_data="main_menu")]
         ]
         await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
 
@@ -860,13 +1109,13 @@ async def button_handler_inner(update: Update, context: ContextTypes.DEFAULT_TYP
         found = find_matching_bybit_deposit(unique_amount)
         if found:
             mark_transaction_completed(track_id)
-            await fulfill_transaction(query, track_id, user_id, amount, product_id, qty, extra_credit=extra_credit)
+            await fulfill_transaction(query, track_id, user_id, amount, product_id, qty, extra_credit=extra_credit, bot_context=context)
         else:
             support_url = get_support_url()
             keyboard = [
                 [InlineKeyboardButton("✅ I've Sent It — Check Now", callback_data=f"checkbybit_{track_id}")],
-                [InlineKeyboardButton("💬 Contact Support", url=support_url)],
-                [InlineKeyboardButton("◀ Main Menu", callback_data="main_menu")]
+                [InlineKeyboardButton(s["support"], url=support_url)],
+                [InlineKeyboardButton(s["main_menu"], callback_data="main_menu")]
             ]
             await query.edit_message_text(
                 f"⏳ We haven't seen that deposit yet. Double check the amount was exact ({unique_amount} USDT) and try again in a minute.",
@@ -874,6 +1123,10 @@ async def button_handler_inner(update: Update, context: ContextTypes.DEFAULT_TYP
             )
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
+    lang = get_user_lang(user_id)
+    s = STRINGS[lang]
+
     if context.user_data.get('awaiting_quantity'):
         product_id = context.user_data.get('cur_product')
         info = PRODUCTS.get(product_id)
@@ -915,9 +1168,127 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         context.user_data['awaiting_amount'] = False
         context.user_data['deposit_amount'] = amount
 
-        msg, markup = build_payment_method_page(amount)
+        msg, markup = build_payment_method_page(amount, lang)
         await update.message.reply_text(msg, reply_markup=markup)
         return
+
+# --- ADMIN COMMANDS ---
+async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message.from_user.id != ADMIN_ID:
+        return
+
+    text = None
+    if update.message.reply_to_message:
+        text = update.message.reply_to_message.text or update.message.reply_to_message.caption
+    elif context.args:
+        text = " ".join(context.args)
+
+    if not text:
+        await update.message.reply_text("❌ Usage:\n• `/broadcast <your message>`\n• Or reply `/broadcast` to any message/photo to broadcast it.")
+        return
+
+    users = get_all_users_list(limit=10000)
+    success = 0
+    failed = 0
+
+    await update.message.reply_text(f"🚀 Starting broadcast to {len(users)} users...")
+
+    for u_id, _ in users:
+        try:
+            if update.message.reply_to_message:
+                await update.message.reply_to_message.copy(chat_id=u_id)
+            else:
+                await context.bot.send_message(chat_id=u_id, text=text, parse_mode="HTML")
+            success += 1
+            time.sleep(0.04)  # Anti-flood rate limit
+        except Exception:
+            failed += 1
+
+    await update.message.reply_text(f"✅ Broadcast finished!\n\n• Successfully Sent: <b>{success}</b>\n• Failed: <b>{failed}</b>", parse_mode="HTML")
+
+async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message.from_user.id != ADMIN_ID:
+        return
+
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+
+    cursor.execute('SELECT COUNT(*) FROM users')
+    total_users = cursor.fetchone()[0]
+
+    cursor.execute('SELECT COUNT(*), SUM(total_price) FROM orders')
+    order_row = cursor.fetchone()
+    total_orders = order_row[0] if order_row else 0
+    total_revenue = order_row[1] if order_row and order_row[1] else 0.0
+
+    cursor.execute('SELECT COUNT(*), SUM(total_price) FROM orders WHERE DATE(timestamp) = DATE("now")')
+    today_row = cursor.fetchone()
+    today_orders = today_row[0] if today_row else 0
+    today_revenue = today_row[1] if today_row and today_row[1] else 0.0
+
+    conn.close()
+
+    stock_msg = ""
+    for pid, pinfo in PRODUCTS.items():
+        stk = get_product_stock(pid)
+        stock_msg += f"• {pinfo['name']}: <b>{stk}</b> in stock\n"
+
+    msg = (f"📊 <b>Store Analytics & Revenue Stats</b>\n\n"
+           f"👥 Total Registered Users: <b>{total_users}</b>\n"
+           f"📦 Total Orders Completed: <b>{total_orders}</b>\n"
+           f"💰 Total Revenue (All Time): <b>${total_revenue:.2f}</b>\n"
+           f"💵 Today's Revenue: <b>${today_revenue:.2f}</b> ({today_orders} orders)\n\n"
+           f"<b>Current Stock Levels:</b>\n{stock_msg}")
+    await update.message.reply_text(msg, parse_mode="HTML")
+
+async def addcoupon_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message.from_user.id != ADMIN_ID:
+        return
+    if len(context.args) < 3:
+        await update.message.reply_text("❌ Usage: `/addcoupon <code> <discount%_or_USD> <uses_count>`\nExample: `/addcoupon SAVE10 10% 50` or `/addcoupon FREE1 1.0USD 20`", parse_mode="HTML")
+        return
+
+    code = context.args[0].strip()
+    val_str = context.args[1].strip()
+    uses = int(context.args[2])
+
+    if val_str.endswith("%"):
+        dtype = "percent"
+        dval = float(val_str.rstrip("%"))
+    else:
+        dtype = "usd"
+        dval = float(val_str.replace("USD", "").replace("$", ""))
+
+    add_coupon(code, dtype, dval, uses)
+    await update.message.reply_text(f"✅ Coupon <code>{code.upper()}</code> created ({dval}{'%' if dtype=='percent' else '$'}, {uses} uses)!", parse_mode="HTML")
+
+async def listcoupons_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message.from_user.id != ADMIN_ID:
+        return
+    coupons = list_coupons()
+    if not coupons:
+        await update.message.reply_text("ℹ️ No active coupons found.")
+        return
+
+    msg = "🎟️ <b>Active Promo Coupons:</b>\n\n"
+    for code, dtype, dval, uses in coupons:
+        unit = "%" if dtype == "percent" else "$"
+        msg += f"• <code>{code}</code>: <b>{dval}{unit}</b> off ({uses} uses left)\n"
+
+    await update.message.reply_text(msg, parse_mode="HTML")
+
+async def delcoupon_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message.from_user.id != ADMIN_ID:
+        return
+    if not context.args:
+        await update.message.reply_text("❌ Usage: `/delcoupon <code>`", parse_mode="HTML")
+        return
+    code = context.args[0].strip()
+    cnt = delete_coupon(code)
+    if cnt > 0:
+        await update.message.reply_text(f"✅ Coupon <code>{code.upper()}</code> deleted.", parse_mode="HTML")
+    else:
+        await update.message.reply_text(f"❌ Coupon <code>{code.upper()}</code> not found.", parse_mode="HTML")
 
 async def addstock(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message.from_user.id != ADMIN_ID:
@@ -1142,16 +1513,22 @@ async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
            f"OxaPay Merchant Key: {ox_status}\n"
            f"Bybit UID: {by_uid_status}\n"
            f"Bybit API Key: {by_api_status}\n\n"
-           f"<b>Admin Inventory Commands:</b>\n"
+           f"<b>📢 Marketing & Broadcast:</b>\n"
+           f"• <code>/broadcast &lt;msg&gt;</code> - Send message to all users\n"
+           f"• <code>/stats</code> - View sales, revenue & users stats\n"
+           f"• <code>/addcoupon &lt;code&gt; &lt;10%|1$ &gt; &lt;uses&gt;</code> - Add coupon\n"
+           f"• <code>/coupons</code> - List coupons\n"
+           f"• <code>/delcoupon &lt;code&gt;</code> - Delete coupon\n\n"
+           f"<b>📦 Inventory Control:</b>\n"
            f"• <code>/clearstock &lt;product_id|all&gt;</code> - Clear stock\n"
            f"• <code>/addstock &lt;product_id&gt;</code> - Add stock\n\n"
-           f"<b>Admin User Management Commands:</b>\n"
-           f"• <code>/users</code> - List all users\n"
-           f"• <code>/user &lt;user_id&gt;</code> - View profile & balance\n"
-           f"• <code>/credituser &lt;user_id&gt; &lt;amount&gt;</code> - Add balance\n"
+           f"<b>👥 User Management:</b>\n"
+           f"• <code>/users</code> - List users & balances\n"
+           f"• <code>/user &lt;user_id&gt;</code> - View profile & history\n"
+           f"• <code>/credituser &lt;user_id&gt; &lt;amount&gt;</code> - Credit balance\n"
            f"• <code>/setbalance &lt;user_id&gt; &lt;amount&gt;</code> - Set exact balance\n\n"
-           f"<b>Admin Config Commands:</b>\n"
-           f"• <code>/setsupport &lt;username&gt;</code> - Update Support Handle\n"
+           f"<b>⚙️ Config Commands:</b>\n"
+           f"• <code>/setsupport &lt;username&gt;</code>\n"
            f"• <code>/setoxapay &lt;key&gt;</code>\n"
            f"• <code>/setbybit &lt;uid&gt;</code>\n"
            f"• <code>/setbybitkeys &lt;key&gt; &lt;secret&gt;</code>")
@@ -1227,6 +1604,11 @@ def main() -> None:
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("addstock", addstock))
     application.add_handler(CommandHandler("clearstock", clearstock))
+    application.add_handler(CommandHandler("broadcast", broadcast))
+    application.add_handler(CommandHandler("stats", stats))
+    application.add_handler(CommandHandler("addcoupon", addcoupon_cmd))
+    application.add_handler(CommandHandler("coupons", listcoupons_cmd))
+    application.add_handler(CommandHandler("delcoupon", delcoupon_cmd))
     application.add_handler(CommandHandler("user", user_command))
     application.add_handler(CommandHandler("users", users_command))
     application.add_handler(CommandHandler("setbalance", setbalance))
@@ -1241,7 +1623,7 @@ def main() -> None:
     application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
-    print("Mongyni Bot is running...")
+    print("Mongyni Bot is running with full features...")
     application.run_polling()
 
 if __name__ == "__main__":
