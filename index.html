@@ -92,8 +92,8 @@
 
     <div class="balance-info" id="userBalance">Balance: $0.00</div>
 
-    <!-- Product Button -->
-    <button id="buyBtn" class="product-btn"></button>
+    <!-- Products Container -->
+    <div id="productsContainer"></div>
 
     <!-- Add Funds Button -->
     <button id="addFundsBtn" class="action-btn">💳 Add Funds (OxaPay)</button>
@@ -105,43 +105,48 @@
         const tg = window.Telegram.WebApp;
         tg.expand();
 
-        // Get data from URL sent by Python Bot
         const urlParams = new URLSearchParams(window.location.search);
-        const stock = parseInt(urlParams.get('stock')) || 0;
         const balance = parseFloat(urlParams.get('balance')) || 0.0;
+        const currentProdId = urlParams.get('product') || '';
+        const prodStock = parseInt(urlParams.get('stock')) || 0;
 
-        // Display Balance
         document.getElementById('userBalance').innerText = `Your Balance: $${balance.toFixed(2)}`;
 
-        const buyBtn = document.getElementById('buyBtn');
-        const icon = "📦";
-        const productName = "Office 365 1TB";
-        const price = "$1.30";
+        const products = [
+            { id: "office365", name: "Office 365 1TB", price: "$1.30" },
+            { id: "hotmail", name: "Hotmail Trusted OAuth2 V8 (7-90 Days)", price: "$0.018" },
+            { id: "hotmail_graph", name: "Hotmail Trusted - OAuth2 [Graph] (12-36M)", price: "$0.0190" }
+        ];
 
-        // Logic for Button Colors and Text matching the screenshot style
-        if (stock === 0) {
-            buyBtn.className = "product-btn btn-disabled";
-            buyBtn.innerText = `${icon} ${productName} - ${price} | Stock: ${stock}`;
-            buyBtn.disabled = true;
-        } else if (stock < 10) {
-            buyBtn.className = "product-btn btn-red";
-            buyBtn.innerText = `${icon} ${productName} - ${price} | Stock: ${stock}`;
-        } else if (stock <= 50) {
-            buyBtn.className = "product-btn btn-orange";
-            buyBtn.innerText = `${icon} ${productName} - ${price} | Stock: ${stock}`;
-        } else {
-            buyBtn.className = "product-btn btn-green";
-            buyBtn.innerText = `${icon} ${productName} - ${price} | Stock: ${stock}`;
-        }
+        const container = document.getElementById('productsContainer');
 
-        // Action when Buy is clicked
-        buyBtn.addEventListener('click', () => {
-            if (stock > 0) {
+        products.forEach(prod => {
+            const btn = document.createElement('button');
+            const icon = "📦";
+            let stock = prodStock; // If URL passed stock for this specific product
+
+            if (stock === 0) {
+                btn.className = "product-btn btn-disabled";
+                btn.innerText = `${icon} ${prod.name} - ${prod.price} | Stock: Out of Stock`;
+            } else if (stock < 10) {
+                btn.className = "product-btn btn-red";
+                btn.innerText = `${icon} ${prod.name} - ${prod.price} | Stock: ${stock}`;
+            } else if (stock <= 50) {
+                btn.className = "product-btn btn-orange";
+                btn.innerText = `${icon} ${prod.name} - ${prod.price} | Stock: ${stock}`;
+            } else {
+                btn.className = "product-btn btn-green";
+                btn.innerText = `${icon} ${prod.name} - ${prod.price} | Stock: ${stock}`;
+            }
+
+            btn.addEventListener('click', () => {
                 tg.sendData(JSON.stringify({
                     action: "buy_product",
-                    product_id: "office365"
+                    product_id: prod.id
                 }));
-            }
+            });
+
+            container.appendChild(btn);
         });
 
         // Action for Add Funds

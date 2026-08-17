@@ -70,6 +70,35 @@ PRODUCTS = {
             {"min_qty": 100, "price": 0.012}
         ]
     },
+    "hotmail_graph": {
+        "name": "Hotmail Trusted - OAuth2 [Graph] (Live 12-36M)",
+        "description": """📧 What You Receive
+
+✅ Hotmail Trusted - OAuth2 [Graph] account
+✅ Account age / Validity: Live 12 - 36 Months (100% 7day skip Zin)
+✅ Format: mail | password | refreshtoken
+✅ Instant delivery 24/7
+✅ Details delivered automatically after purchase
+
+📝 Description:
+Get trusted, long-term Hotmail accounts with OAuth2 Graph API access, valid for 12-36 months - 100% genuine and ready for automation, bulk emailing, or secure multi-account management. Perfect for marketers and developers needing reliable, aged inboxes with zero risk of lockout.
+
+🛠️ How to Use
+1. Go to: https://aquamarine-pie-24ef2f.netlify.app/
+2. Paste the information you received from the bot.
+3. Click on the email.
+4. Follow the instructions to access the account.
+
+⚡ Why Buy From Us?
+🚀 Instant delivery 24/7
+🔑 OAuth2 Graph API access
+📅 Live 12 - 36 Months (100% 7day skip Zin)""",
+        "price": 0.019,
+        "bulk_discounts": [
+            {"min_qty": 50, "price": 0.016},
+            {"min_qty": 100, "price": 0.013}
+        ]
+    },
 }
 
 # --- MULTI-LANGUAGE DICTIONARY ---
@@ -601,7 +630,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     for product_id, info in PRODUCTS.items():
         stock = get_product_stock(product_id)
         icon = "🔴" if stock == 0 else ("🔴" if stock < 10 else ("🟠" if stock <= 50 else "🟢"))
-        btn_text = f"{icon} {info['name']} - ${info['price']:.2f} ({s['stock']}: {stock})"
+        price_str = f"${info['price']:.4f}".rstrip('0').rstrip('.') if info['price'] < 0.1 else f"${info['price']:.2f}"
+        btn_text = f"{icon} {info['name']} - {price_str} ({s['stock']}: {stock})"
         keyboard.append([InlineKeyboardButton(btn_text, callback_data=f"prod_{product_id}")])
 
     support_url = get_support_url()
