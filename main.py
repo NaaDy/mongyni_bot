@@ -493,13 +493,18 @@ async def button_handler_inner(update: Update, context: ContextTypes.DEFAULT_TYP
 
         merchant_key = get_oxapay_merchant_key()
         total_price = info["price"] * qty
-        raw_invoice_amount = total_price + 0.04
+        
+        # 1.4% percentage fee + unique 6-digit decimal tracking fraction
+        track_id = int(uuid.uuid4().int % 10_000_000_000)
+        unique_suffix = (track_id % 9999) / 1000000.0
+        fee = total_price * 0.014
+        raw_invoice_amount = total_price + fee + unique_suffix
         
         if raw_invoice_amount < OXAPAY_MIN_INVOICE:
             invoice_amount = OXAPAY_MIN_INVOICE
-            extra_credit = round(OXAPAY_MIN_INVOICE - total_price, 5)
+            extra_credit = round(OXAPAY_MIN_INVOICE - total_price, 6)
         else:
-            invoice_amount = raw_invoice_amount
+            invoice_amount = round(raw_invoice_amount, 6)
             extra_credit = 0.0
 
         order_id = str(uuid.uuid4())
@@ -557,8 +562,8 @@ async def button_handler_inner(update: Update, context: ContextTypes.DEFAULT_TYP
         bybit_uid = get_bybit_uid()
         total_price = info["price"] * qty
         track_id = int(uuid.uuid4().int % 10_000_000_000)
-        unique_suffix = (track_id % 999) / 100000
-        unique_amount = round(total_price + unique_suffix, 5)
+        unique_suffix = (track_id % 9999) / 1000000.0
+        unique_amount = round(total_price + unique_suffix, 6)
 
         create_transaction(track_id, user_id, total_price, "pending", "bybit", product_id=product_id, qty=qty)
         context.user_data['bybit_unique_amount'] = unique_amount
@@ -616,8 +621,20 @@ async def button_handler_inner(update: Update, context: ContextTypes.DEFAULT_TYP
             return
 
         merchant_key = get_oxapay_merchant_key()
-        invoice_amount = max(amount + 0.04, OXAPAY_MIN_INVOICE)
-        extra_credit = round(invoice_amount - amount, 5) if invoice_amount > (amount + 0.04) else 0.0
+        
+        # 1.4% percentage fee + unique 6-digit decimal tracking fraction
+        track_id = int(uuid.uuid4().int % 10_000_000_000)
+        unique_suffix = (track_id % 9999) / 1000000.0
+        fee = amount * 0.014
+        raw_invoice_amount = amount + fee + unique_suffix
+
+        if raw_invoice_amount < OXAPAY_MIN_INVOICE:
+            invoice_amount = OXAPAY_MIN_INVOICE
+            extra_credit = round(OXAPAY_MIN_INVOICE - amount, 6)
+        else:
+            invoice_amount = round(raw_invoice_amount, 6)
+            extra_credit = 0.0
+
         order_id = str(uuid.uuid4())
 
         payload = {
@@ -655,6 +672,7 @@ async def button_handler_inner(update: Update, context: ContextTypes.DEFAULT_TYP
         else:
             err_msg = res_data.get("message") if isinstance(res_data, dict) else str(res_data)
             await query.edit_message_text(f"❌ Whitelabel Invoice Error ({status_code}): {err_msg}")
+
 
     elif data.startswith("checkpay_"):
         track_id = data.split("_")[1]
