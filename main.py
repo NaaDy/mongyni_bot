@@ -134,6 +134,13 @@ def get_bybit_api_key():
 def get_bybit_api_secret():
     return get_setting("BYBIT_API_SECRET", "")
 
+def get_support_username():
+    return get_setting("SUPPORT_USERNAME", "mongyni").lstrip("@")
+
+def get_support_url():
+    username = get_support_username()
+    return f"https://t.me/{username}"
+
 def get_user_balance(user_id):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
@@ -321,7 +328,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         btn_text = f"{icon} {info['name']} - ${info['price']:.2f} (Stock: {stock})"
         keyboard.append([InlineKeyboardButton(btn_text, callback_data=f"prod_{product_id}")])
 
-    keyboard.append([InlineKeyboardButton("💳 Add Funds", callback_data="menu_addfunds")])
+    support_url = get_support_url()
+    keyboard.append([
+        InlineKeyboardButton("💳 Add Funds", callback_data="menu_addfunds"),
+        InlineKeyboardButton("💬 Support", url=support_url)
+    ])
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     msg = f"Welcome to Mongyni Store!\n\nYour ID: {user_id}\nYour Balance: ${balance:.2f}\n\nPlease select a product below:"
@@ -347,6 +358,7 @@ def build_confirm_page(product_id, qty, user_id):
     info = PRODUCTS[product_id]
     total = info["price"] * qty
     balance = get_user_balance(user_id)
+    support_url = get_support_url()
 
     msg = (f"📦 <b>{info['name']}</b>\n\n"
            f"Quantity: <b>{qty}</b>\n"
@@ -361,16 +373,21 @@ def build_confirm_page(product_id, qty, user_id):
 
     keyboard.append([InlineKeyboardButton("💠 Direct Pay via Crypto (OxaPay)", callback_data=f"payprod_oxapay_{product_id}_{qty}")])
     keyboard.append([InlineKeyboardButton("🅱️ Direct Pay via Bybit UID", callback_data=f"payprod_bybit_{product_id}_{qty}")])
-    keyboard.append([InlineKeyboardButton("💳 Add Funds to Balance", callback_data="menu_addfunds")])
+    keyboard.append([
+        InlineKeyboardButton("💳 Add Funds", callback_data="menu_addfunds"),
+        InlineKeyboardButton("💬 Support", url=support_url)
+    ])
     keyboard.append([InlineKeyboardButton("◀ Cancel", callback_data="main_menu")])
 
     return msg, InlineKeyboardMarkup(keyboard)
 
 def build_payment_method_page(amount):
+    support_url = get_support_url()
     msg = f"Amount to Deposit: ${amount:.2f}\n\nHow would you like to pay?"
     keyboard = [
         [InlineKeyboardButton("💠 Pay with Crypto (OxaPay)", callback_data="paymethod_oxapay")],
         [InlineKeyboardButton("🅱️ Pay via Bybit UID", callback_data="paymethod_bybit")],
+        [InlineKeyboardButton("💬 Need Support?", url=support_url)],
         [InlineKeyboardButton("◀ Cancel", callback_data="main_menu")],
     ]
     return msg, InlineKeyboardMarkup(keyboard)
@@ -488,10 +505,11 @@ async def button_handler_inner(update: Update, context: ContextTypes.DEFAULT_TYP
         balance = get_user_balance(user_id)
 
         if balance < total_price:
+            support_url = get_support_url()
             keyboard = [
                 [InlineKeyboardButton("💠 Pay directly via OxaPay", callback_data=f"payprod_oxapay_{product_id}_{qty}")],
                 [InlineKeyboardButton("🅱️ Pay directly via Bybit UID", callback_data=f"payprod_bybit_{product_id}_{qty}")],
-                [InlineKeyboardButton("💳 Add Funds to Account", callback_data="menu_addfunds")],
+                [InlineKeyboardButton("💳 Add Funds", callback_data="menu_addfunds"), InlineKeyboardButton("💬 Support", url=support_url)],
                 [InlineKeyboardButton("◀ Main Menu", callback_data="main_menu")],
             ]
             await query.edit_message_text(
@@ -601,8 +619,10 @@ async def button_handler_inner(update: Update, context: ContextTypes.DEFAULT_TYP
 
             msg += f"⚠️ Send EXACTLY <code>{pay_amount}</code> {pay_currency} to the address above.\nOnce sent, tap the button below:"
             
+            support_url = get_support_url()
             keyboard = [
                 [InlineKeyboardButton("Check Payment Status", callback_data=f"checkpay_{track_id}")],
+                [InlineKeyboardButton("💬 Need Support?", url=support_url)],
                 [InlineKeyboardButton("◀ Main Menu", callback_data="main_menu")]
             ]
             await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
@@ -630,6 +650,7 @@ async def button_handler_inner(update: Update, context: ContextTypes.DEFAULT_TYP
         context.user_data['bybit_unique_amount'] = unique_amount
 
         safe_uid = html_lib.escape(str(bybit_uid))
+        support_url = get_support_url()
         msg = (f"📬 Direct Payment for <b>{qty}x {info['name']}</b>:\n\n"
                f"Send EXACTLY this amount via Bybit 'Send to UID':\n"
                f"<code>{unique_amount}</code> USDT\n\n"
@@ -637,6 +658,7 @@ async def button_handler_inner(update: Update, context: ContextTypes.DEFAULT_TYP
                f"Once sent, tap the button below to receive your product immediately.")
         keyboard = [
             [InlineKeyboardButton("✅ I've Sent It — Check Now", callback_data=f"checkbybit_{track_id}")],
+            [InlineKeyboardButton("💬 Contact Support", url=support_url)],
             [InlineKeyboardButton("◀ Main Menu", callback_data="main_menu")]
         ]
         await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
@@ -719,6 +741,7 @@ async def button_handler_inner(update: Update, context: ContextTypes.DEFAULT_TYP
             create_transaction(track_id, user_id, amount, "pending", "oxapay", extra_credit=extra_credit)
 
             net_display = network.upper() if network != "none" else pay_currency
+            support_url = get_support_url()
             msg = (f"💳 <b>OxaPay Whitelabel Deposit Invoice</b>\n\n"
                    f"Amount to Send: <code>{pay_amount}</code> {pay_currency}\n"
                    f"Network: <b>{net_display}</b>\n\n"
@@ -727,6 +750,7 @@ async def button_handler_inner(update: Update, context: ContextTypes.DEFAULT_TYP
                    f"⚠️ Send EXACTLY <code>{pay_amount}</code> {pay_currency} to the address above.\nOnce sent, click the button below to check status.")
             keyboard = [
                 [InlineKeyboardButton("Check Payment Status", callback_data=f"checkpay_{track_id}")],
+                [InlineKeyboardButton("💬 Need Support?", url=support_url)],
                 [InlineKeyboardButton("◀ Main Menu", callback_data="main_menu")]
             ]
             await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
@@ -762,8 +786,10 @@ async def button_handler_inner(update: Update, context: ContextTypes.DEFAULT_TYP
                     conn.close()
                     await query.edit_message_text("❌ This payment link has expired. Please request a new one.")
                 else:
+                    support_url = get_support_url()
                     keyboard = [
                         [InlineKeyboardButton("Check Payment Status", callback_data=f"checkpay_{track_id}")],
+                        [InlineKeyboardButton("💬 Need Support?", url=support_url)],
                         [InlineKeyboardButton("◀ Back", callback_data="main_menu")]
                     ]
                     status_display = res_data.get("status", "Pending")
@@ -797,12 +823,14 @@ async def button_handler_inner(update: Update, context: ContextTypes.DEFAULT_TYP
         context.user_data['bybit_unique_amount'] = unique_amount
 
         safe_uid = html_lib.escape(str(bybit_uid))
+        support_url = get_support_url()
         msg = (f"📬 Send EXACTLY this amount via Bybit 'Send to UID':\n\n"
                f"<code>{unique_amount}</code> USDT\n\n"
                f"To this Bybit UID:\n<code>{safe_uid}</code>\n\n"
                f"Once sent, tap the button below.")
         keyboard = [
             [InlineKeyboardButton("✅ I've Sent It — Check Now", callback_data=f"checkbybit_{track_id}")],
+            [InlineKeyboardButton("💬 Contact Support", url=support_url)],
             [InlineKeyboardButton("◀ Main Menu", callback_data="main_menu")]
         ]
         await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
@@ -834,8 +862,10 @@ async def button_handler_inner(update: Update, context: ContextTypes.DEFAULT_TYP
             mark_transaction_completed(track_id)
             await fulfill_transaction(query, track_id, user_id, amount, product_id, qty, extra_credit=extra_credit)
         else:
+            support_url = get_support_url()
             keyboard = [
                 [InlineKeyboardButton("✅ I've Sent It — Check Now", callback_data=f"checkbybit_{track_id}")],
+                [InlineKeyboardButton("💬 Contact Support", url=support_url)],
                 [InlineKeyboardButton("◀ Main Menu", callback_data="main_menu")]
             ]
             await query.edit_message_text(
@@ -1027,6 +1057,16 @@ async def setbalance(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     except Exception as e:
         logging.warning(f"Could not notify user {target_user}: {e}")
 
+async def setsupport(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message.from_user.id != ADMIN_ID:
+        return
+    if not context.args:
+        await update.message.reply_text("❌ Usage: <code>/setsupport &lt;username&gt;</code> (e.g. <code>/setsupport @mongyni</code>)", parse_mode="HTML")
+        return
+    username = context.args[0].strip().lstrip("@")
+    set_setting("SUPPORT_USERNAME", username)
+    await update.message.reply_text(f"✅ Support handle updated to <b>@{username}</b> (https://t.me/{username})!", parse_mode="HTML")
+
 async def setoxapay(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message.from_user.id != ADMIN_ID:
         return
@@ -1091,12 +1131,14 @@ async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     ox_key = get_oxapay_merchant_key()
     by_uid = get_bybit_uid()
     by_key = get_bybit_api_key()
+    sup_user = get_support_username()
 
     ox_status = "✅ Set" if ox_key and ox_key != "YOUR_OXAPAY_MERCHANT_KEY" else "❌ Not Configured"
     by_uid_status = f"✅ Set ({by_uid})" if by_uid and by_uid != "YOUR_BYBIT_UID_HERE" else "❌ Not Configured"
     by_api_status = "✅ Set" if by_key else "❌ Not Configured"
 
     msg = (f"⚙️ <b>Bot Settings & Control Panel</b>\n\n"
+           f"Support Handle: <b>@{sup_user}</b>\n"
            f"OxaPay Merchant Key: {ox_status}\n"
            f"Bybit UID: {by_uid_status}\n"
            f"Bybit API Key: {by_api_status}\n\n"
@@ -1109,6 +1151,7 @@ async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
            f"• <code>/credituser &lt;user_id&gt; &lt;amount&gt;</code> - Add balance\n"
            f"• <code>/setbalance &lt;user_id&gt; &lt;amount&gt;</code> - Set exact balance\n\n"
            f"<b>Admin Config Commands:</b>\n"
+           f"• <code>/setsupport &lt;username&gt;</code> - Update Support Handle\n"
            f"• <code>/setoxapay &lt;key&gt;</code>\n"
            f"• <code>/setbybit &lt;uid&gt;</code>\n"
            f"• <code>/setbybitkeys &lt;key&gt; &lt;secret&gt;</code>")
@@ -1187,6 +1230,7 @@ def main() -> None:
     application.add_handler(CommandHandler("user", user_command))
     application.add_handler(CommandHandler("users", users_command))
     application.add_handler(CommandHandler("setbalance", setbalance))
+    application.add_handler(CommandHandler("setsupport", setsupport))
     application.add_handler(CommandHandler("setoxapay", setoxapay))
     application.add_handler(CommandHandler("setbybit", setbybit))
     application.add_handler(CommandHandler("setbybitkeys", setbybitkeys))
