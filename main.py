@@ -866,9 +866,13 @@ async def button_handler_inner(update: Update, context: ContextTypes.DEFAULT_TYP
         await query.edit_message_text(msg, reply_markup=markup)
 
     elif data.startswith("confirm_"):
-        parts = data.split("_")
-        product_id = parts[1]
-        qty = int(parts[2]) if len(parts) > 2 else context.user_data.get('cur_qty', 1)
+        remainder = data[len("confirm_"):]
+        if "_" in remainder:
+            product_id, qty_str = remainder.rsplit("_", 1)
+            qty = int(qty_str)
+        else:
+            product_id = remainder
+            qty = context.user_data.get('cur_qty', 1)
 
         info = PRODUCTS.get(product_id)
         if not info:
@@ -912,9 +916,9 @@ async def button_handler_inner(update: Update, context: ContextTypes.DEFAULT_TYP
 
     # --- Direct Product OxaPay Pay ---
     elif data.startswith("payprod_oxapay_"):
-        parts = data.split("_")
-        product_id = parts[2]
-        qty = int(parts[3])
+        remainder = data[len("payprod_oxapay_"):]
+        product_id, qty_str = remainder.rsplit("_", 1)
+        qty = int(qty_str)
         info = PRODUCTS.get(product_id)
         if not info:
             await query.answer("❌ Product not found.", show_alert=True)
@@ -935,11 +939,12 @@ async def button_handler_inner(update: Update, context: ContextTypes.DEFAULT_TYP
 
     # --- Direct Product OxaPay Whitelabel Address Generation ---
     elif data.startswith("payprodcoin_"):
-        parts = data.split("_")
-        product_id = parts[1]
-        qty = int(parts[2])
-        pay_currency = parts[3]
-        network = parts[4] if len(parts) > 4 else "none"
+        remainder = data[len("payprodcoin_"):]
+        parts = remainder.rsplit("_", 3)
+        product_id = parts[0]
+        qty = int(parts[1])
+        pay_currency = parts[2]
+        network = parts[3] if len(parts) > 3 else "none"
 
         info = PRODUCTS.get(product_id)
         if not info:
@@ -1009,9 +1014,9 @@ async def button_handler_inner(update: Update, context: ContextTypes.DEFAULT_TYP
 
     # --- Direct Product Bybit Pay ---
     elif data.startswith("payprod_bybit_"):
-        parts = data.split("_")
-        product_id = parts[2]
-        qty = int(parts[3])
+        remainder = data[len("payprod_bybit_"):]
+        product_id, qty_str = remainder.rsplit("_", 1)
+        qty = int(qty_str)
         info = PRODUCTS.get(product_id)
         if not info:
             await query.answer("❌ Product not found.", show_alert=True)
