@@ -317,6 +317,22 @@ def build_payment_method_page(amount):
     ]
     return msg, InlineKeyboardMarkup(keyboard)
 
+def build_oxapay_coin_menu(prefix, details_header):
+    msg = (f"💳 <b>Choose Payment Coin & Network</b>\n\n"
+           f"{details_header}\n\n"
+           f"Select your preferred cryptocurrency below to generate your direct wallet address:")
+    keyboard = [
+        [InlineKeyboardButton("💚 USDT (TRC20 - Tron)", callback_data=f"{prefix}_USDT_trc20")],
+        [InlineKeyboardButton("💛 USDT (BEP20 - BSC)", callback_data=f"{prefix}_USDT_bep20")],
+        [InlineKeyboardButton("💜 USDT (Polygon)", callback_data=f"{prefix}_USDT_polygon")],
+        [InlineKeyboardButton("💙 USDT (ERC20 - Ethereum)", callback_data=f"{prefix}_USDT_erc20")],
+        [InlineKeyboardButton("⚡ LTC (Litecoin)", callback_data=f"{prefix}_LTC_none")],
+        [InlineKeyboardButton("🔴 TRX (Tron)", callback_data=f"{prefix}_TRX_none")],
+        [InlineKeyboardButton("🟠 BTC (Bitcoin)", callback_data=f"{prefix}_BTC_none")],
+        [InlineKeyboardButton("◀ Cancel", callback_data="main_menu")],
+    ]
+    return msg, InlineKeyboardMarkup(keyboard)
+
 async def fulfill_transaction(query_or_message, track_id, user_id, amount, product_id, qty, extra_credit=0.0):
     info = PRODUCTS.get(product_id)
     if product_id and qty > 0 and info:
@@ -440,7 +456,7 @@ async def button_handler_inner(update: Update, context: ContextTypes.DEFAULT_TYP
         else:
             await query.answer("❌ Sorry, not enough stock for that quantity.", show_alert=True)
 
-    # --- Direct Product OxaPay Pay ---
+    # --- Direct Product OxaPay Pay (Coin Selection) ---
     elif data.startswith("payprod_oxapay_"):
         parts = data.split("_")
         product_id = parts[2]
@@ -459,9 +475,26 @@ async def button_handler_inner(update: Update, context: ContextTypes.DEFAULT_TYP
             return
 
         total_price = info["price"] * qty
+        msg, markup = build_oxapay_coin_menu(f"payprodcoin_{product_id}_{qty}", f"Order: <b>{qty}x {info['name']}</b> — Price: <b>${total_price:.2f} USD</b>")
+        await query.edit_message_text(msg, reply_markup=markup, parse_mode="HTML")
+
+    # --- Direct Product OxaPay Whitelabel Address Generation ---
+    elif data.startswith("payprodcoin_"):
+        parts = data.split("_")
+        product_id = parts[1]
+        qty = int(parts[2])
+        pay_currency = parts[3]
+        network = parts[4] if len(parts) > 4 else "none"
+
+        info = PRODUCTS.get(product_id)
+        if not info:
+            await query.answer("❌ Product not found.", show_alert=True)
+            return
+
+        merchant_key = get_oxapay_merchant_key()
+        total_price = info["price"] * qty
         raw_invoice_amount = total_price + 0.04
         
-        # Ensure invoice satisfies OxaPay $0.50 USD minimum
         if raw_invoice_amount < OXAPAY_MIN_INVOICE:
             invoice_amount = OXAPAY_MIN_INVOICE
             extra_credit = round(OXAPAY_MIN_INVOICE - total_price, 5)
@@ -470,43 +503,46 @@ async def button_handler_inner(update: Update, context: ContextTypes.DEFAULT_TYP
             extra_credit = 0.0
 
         order_id = str(uuid.uuid4())
-
         payload = {
             "merchant": merchant_key,
             "amount": invoice_amount,
             "currency": "USD",
-            "lifeTime": 60,
-            "feePaidByPayer": 1,
+            "payCurrency": pay_currency,
             "orderId": order_id,
             "description": f"Direct order {qty}x {info['name']} for User {user_id}"
         }
+        if network and network != "none":
+            payload["network"] = network
 
-        ok, status_code, res_data = oxapay_post_request("/merchants/request", payload)
+        ok, status_code, res_data = oxapay_post_request("/merchants/request/whitelabel", payload)
 
         if ok and isinstance(res_data, dict) and res_data.get("result") == 100:
-            pay_link = res_data.get("payLink")
+            address = res_data.get("address")
+            pay_amount = res_data.get("payAmount")
             track_id = res_data.get("trackId")
+
             create_transaction(track_id, user_id, total_price, "pending", "oxapay", product_id=product_id, qty=qty, extra_credit=extra_credit)
 
+            net_display = network.upper() if network != "none" else pay_currency
+            msg = (f"💳 <b>Direct Whitelabel Invoice for {qty}x {info['name']}</b>\n\n"
+                   f"Amount to Send: <code>{pay_amount}</code> {pay_currency}\n"
+                   f"Network: <b>{net_display}</b>\n\n"
+                   f"📬 <b>Payment Address (Tap to copy):</b>\n"
+                   f"<code>{address}</code>\n\n")
+
+            if extra_credit > 0:
+                msg += f"💡 <i>Note: OxaPay minimum payment is $0.50. The extra <b>${extra_credit:.2f}</b> will be credited to your balance automatically!</i>\n\n"
+
+            msg += f"⚠️ Send EXACTLY <code>{pay_amount}</code> {pay_currency} to the address above.\nOnce sent, tap the button below:"
+            
             keyboard = [
-                [InlineKeyboardButton("💳 Pay via OxaPay Invoice", url=pay_link)],
                 [InlineKeyboardButton("Check Payment Status", callback_data=f"checkpay_{track_id}")],
                 [InlineKeyboardButton("◀ Main Menu", callback_data="main_menu")]
             ]
-            msg = (f"💳 <b>Direct Payment Invoice for {qty}x {info['name']}</b>\n\n"
-                   f"Product Total: <b>${total_price:.2f} USD</b>\n"
-                   f"Invoice Amount: <b>${invoice_amount:.2f} USD</b>\n\n")
-            if extra_credit > 0:
-                msg += f"💡 <i>Note: OxaPay minimum payment is $0.50. The extra <b>${extra_credit:.2f}</b> will be credited to your bot balance automatically!</i>\n\n"
-
-            msg += f"Click the button below to complete your payment on OxaPay:"
             await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
         else:
             err_msg = res_data.get("message") if isinstance(res_data, dict) else str(res_data)
-            await query.edit_message_text(
-                f"❌ OxaPay Error ({status_code}): {err_msg}\n\n"
-                f"💡 If your Merchant Key is invalid, please set it using `/setoxapay YOUR_KEY`"
-            )
+            await query.edit_message_text(f"❌ Whitelabel Invoice Error ({status_code}): {err_msg}")
 
     # --- Direct Product Bybit Pay ---
     elif data.startswith("payprod_bybit_"):
@@ -550,7 +586,7 @@ async def button_handler_inner(update: Update, context: ContextTypes.DEFAULT_TYP
         context.user_data['awaiting_amount'] = False
         await start(update, context)
 
-    # --- OxaPay Add Funds flow ---
+    # --- OxaPay Add Funds Coin Selection ---
     elif data == "paymethod_oxapay":
         amount = context.user_data.get('deposit_amount')
         if not amount:
@@ -565,67 +601,25 @@ async def button_handler_inner(update: Update, context: ContextTypes.DEFAULT_TYP
             )
             return
 
-        invoice_amount = max(amount + 0.04, OXAPAY_MIN_INVOICE)
-        extra_credit = round(invoice_amount - amount, 5) if invoice_amount > (amount + 0.04) else 0.0
-        order_id = str(uuid.uuid4())
-        payload = {
-            "merchant": merchant_key,
-            "amount": invoice_amount,
-            "currency": "USD",
-            "lifeTime": 60,
-            "feePaidByPayer": 1,
-            "orderId": order_id,
-            "description": f"Add funds for User {user_id}"
-        }
+        msg, markup = build_oxapay_coin_menu("paycoin", f"Amount to Deposit: <b>${amount:.2f} USD</b>")
+        await query.edit_message_text(msg, reply_markup=markup, parse_mode="HTML")
 
-        ok, status_code, res_data = oxapay_post_request("/merchants/request", payload)
-
-        if ok and isinstance(res_data, dict) and res_data.get("result") == 100:
-            pay_link = res_data.get("payLink")
-            track_id = res_data.get("trackId")
-            create_transaction(track_id, user_id, amount, "pending", "oxapay", extra_credit=extra_credit)
-
-            keyboard = [
-                [InlineKeyboardButton("💳 Pay via OxaPay Invoice", url=pay_link)],
-                [InlineKeyboardButton("Check Payment Status", callback_data=f"checkpay_{track_id}")],
-                [InlineKeyboardButton("◀ Main Menu", callback_data="main_menu")]
-            ]
-            msg = (f"💳 <b>OxaPay Payment Invoice</b>\n\n"
-                   f"Amount to Deposit: <b>${amount:.2f} USD</b>\n"
-                   f"Total Invoice Amount: <b>${invoice_amount:.2f} USD</b>\n\n"
-                   f"Tap the button below to complete your payment on OxaPay:")
-            await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
-        else:
-            err_msg = res_data.get("message") if isinstance(res_data, dict) else str(res_data)
-            await query.edit_message_text(
-                f"❌ OxaPay API Error ({status_code}): {err_msg}\n\n"
-                f"💡 Please check your key using `/setoxapay YOUR_KEY`"
-            )
-
+    # --- OxaPay Whitelabel Add Funds Address Generation ---
     elif data.startswith("paycoin_"):
         parts = data.split("_", 2)
         pay_currency = parts[1]
-        network = parts[2] if len(parts) > 2 else None
+        network = parts[2] if len(parts) > 2 else "none"
         amount = context.user_data.get('deposit_amount')
-
-        if pay_currency == "USDT" and (not network or network == "none"):
-            keyboard = [
-                [InlineKeyboardButton("TRC20 (Tron)", callback_data="paycoin_USDT_trc20")],
-                [InlineKeyboardButton("BEP20 (BSC)", callback_data="paycoin_USDT_bep20")],
-                [InlineKeyboardButton("ERC20 (Ethereum)", callback_data="paycoin_USDT_erc20")],
-                [InlineKeyboardButton("Polygon", callback_data="paycoin_USDT_polygon")],
-                [InlineKeyboardButton("◀ Cancel", callback_data="main_menu")]
-            ]
-            await query.edit_message_text(f"Amount: ${amount:.2f}\nPlease choose the network for USDT:", reply_markup=InlineKeyboardMarkup(keyboard))
-            return
 
         if not amount:
             await query.edit_message_text("❌ Session expired. Please try again.")
             return
 
         merchant_key = get_oxapay_merchant_key()
+        invoice_amount = max(amount + 0.04, OXAPAY_MIN_INVOICE)
+        extra_credit = round(invoice_amount - amount, 5) if invoice_amount > (amount + 0.04) else 0.0
         order_id = str(uuid.uuid4())
-        invoice_amount = amount + 0.04
+
         payload = {
             "merchant": merchant_key,
             "amount": invoice_amount,
@@ -644,11 +638,15 @@ async def button_handler_inner(update: Update, context: ContextTypes.DEFAULT_TYP
             pay_amount = res_data.get("payAmount")
             track_id = res_data.get("trackId")
 
-            create_transaction(track_id, user_id, amount, "pending", "oxapay")
+            create_transaction(track_id, user_id, amount, "pending", "oxapay", extra_credit=extra_credit)
 
-            msg = (f"⚠️ Please send EXACTLY this amount:\n<code>{pay_amount}</code> {pay_currency}\n\n"
-                   f"📬 To this {network.upper()} address (Tap to copy):\n<code>{address}</code>\n\n"
-                   f"Once sent, click the button below to check status.")
+            net_display = network.upper() if network != "none" else pay_currency
+            msg = (f"💳 <b>OxaPay Whitelabel Deposit Invoice</b>\n\n"
+                   f"Amount to Send: <code>{pay_amount}</code> {pay_currency}\n"
+                   f"Network: <b>{net_display}</b>\n\n"
+                   f"📬 <b>Deposit Address (Tap to copy):</b>\n"
+                   f"<code>{address}</code>\n\n"
+                   f"⚠️ Send EXACTLY <code>{pay_amount}</code> {pay_currency} to the address above.\nOnce sent, click the button below to check status.")
             keyboard = [
                 [InlineKeyboardButton("Check Payment Status", callback_data=f"checkpay_{track_id}")],
                 [InlineKeyboardButton("◀ Main Menu", callback_data="main_menu")]
@@ -656,7 +654,7 @@ async def button_handler_inner(update: Update, context: ContextTypes.DEFAULT_TYP
             await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
         else:
             err_msg = res_data.get("message") if isinstance(res_data, dict) else str(res_data)
-            await query.edit_message_text(f"❌ Error generating address ({status_code}): {err_msg}")
+            await query.edit_message_text(f"❌ Whitelabel Invoice Error ({status_code}): {err_msg}")
 
     elif data.startswith("checkpay_"):
         track_id = data.split("_")[1]
