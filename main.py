@@ -89,6 +89,8 @@ def init_db():
 
     cursor.execute("PRAGMA table_info(transactions)")
     cols = [column[1] for column in cursor.fetchall()]
+    if 'method' not in cols:
+        cursor.execute('ALTER TABLE transactions ADD COLUMN method TEXT')
     if 'product_id' not in cols:
         cursor.execute('ALTER TABLE transactions ADD COLUMN product_id TEXT')
     if 'qty' not in cols:
