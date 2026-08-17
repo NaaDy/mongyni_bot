@@ -382,6 +382,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     try:
         await button_handler_inner(update, context, query)
     except Exception as e:
+        if "Message is not modified" in str(e):
+            logging.info("Ignored 'Message is not modified' error.")
+            return
         logging.error(f"Unhandled error in button_handler (data={query.data}): {e}")
         try:
             await query.message.reply_text(f"❌ Error: {str(e)}. Please tap /start and try again.")
@@ -673,7 +676,6 @@ async def button_handler_inner(update: Update, context: ContextTypes.DEFAULT_TYP
             err_msg = res_data.get("message") if isinstance(res_data, dict) else str(res_data)
             await query.edit_message_text(f"❌ Whitelabel Invoice Error ({status_code}): {err_msg}")
 
-
     elif data.startswith("checkpay_"):
         track_id = data.split("_")[1]
 
@@ -685,16 +687,16 @@ async def button_handler_inner(update: Update, context: ContextTypes.DEFAULT_TYP
         ok, status_code, res_data = oxapay_post_request("/merchants/inquiry", payload)
 
         if ok and isinstance(res_data, dict):
-            status = res_data.get("status")
+            status = str(res_data.get("status", "")).lower()
             txn = get_transaction(track_id, user_id)
             if txn:
                 db_status, amount, method, product_id, qty, extra_credit = txn
                 if db_status == "completed":
                     await query.edit_message_text(f"✅ This payment of ${amount:.2f} has already been completed and processed.")
-                elif status and status.lower() == "paid":
+                elif status in ("paid", "completed", "success", "paid_over", "underpaid"):
                     mark_transaction_completed(track_id)
                     await fulfill_transaction(query, track_id, user_id, amount, product_id, qty, extra_credit=extra_credit)
-                elif status and status.lower() == "expired":
+                elif status == "expired":
                     conn = sqlite3.connect(DB_PATH)
                     cursor = conn.cursor()
                     cursor.execute('UPDATE transactions SET status = ? WHERE track_id = ?', ("expired", track_id))
@@ -706,7 +708,15 @@ async def button_handler_inner(update: Update, context: ContextTypes.DEFAULT_TYP
                         [InlineKeyboardButton("Check Payment Status", callback_data=f"checkpay_{track_id}")],
                         [InlineKeyboardButton("◀ Back", callback_data="main_menu")]
                     ]
-                    await query.edit_message_text(f"⏳ Payment is still pending (Status: {status}).", reply_markup=InlineKeyboardMarkup(keyboard))
+                    status_display = res_data.get("status", "Pending")
+                    msg_text = f"⏳ Payment is still pending (Status: {status_display}).\n\nIf you have already sent the funds, please wait a few seconds for blockchain confirmation and tap Check again."
+                    try:
+                        await query.edit_message_text(msg_text, reply_markup=InlineKeyboardMarkup(keyboard))
+                    except Exception as e:
+                        if "Message is not modified" in str(e):
+                            await query.answer(f"⏳ Status: {status_display}. Please wait a few seconds...", show_alert=True)
+                        else:
+                            raise e
             else:
                 await query.edit_message_text("❌ Transaction not found.")
         else:
@@ -722,8 +732,8 @@ async def button_handler_inner(update: Update, context: ContextTypes.DEFAULT_TYP
 
         bybit_uid = get_bybit_uid()
         track_id = int(uuid.uuid4().int % 10_000_000_000)
-        unique_suffix = (track_id % 999) / 100000
-        unique_amount = round(amount + unique_suffix, 5)
+        unique_suffix = (track_id % 9999) / 1000000.0
+        unique_amount = round(amount + unique_suffix, 6)
 
         create_transaction(track_id, user_id, amount, "pending", "bybit")
         context.user_data['bybit_unique_amount'] = unique_amount
@@ -891,6 +901,32 @@ async def setbybitkeys(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     set_setting("BYBIT_API_SECRET", api_secret)
     await update.message.reply_text("✅ Bybit API Keys updated successfully!")
 
+async def credituser(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message.from_user.id != ADMIN_ID:
+        return
+    if len(context.args) < 2:
+        await update.message.reply_text("❌ Usage: /credituser <user_id> <amount>")
+        return
+    try:
+        target_user = int(context.args[0])
+        amount = float(context.args[1])
+    except ValueError:
+        await update.message.reply_text("❌ Invalid user_id or amount format.")
+        return
+
+    update_user_balance(target_user, amount)
+    new_bal = get_user_balance(target_user)
+    await update.message.reply_text(f"✅ Credited ${amount:.2f} to user {target_user}. New balance: ${new_bal:.2f}")
+
+    try:
+        await context.bot.send_message(
+            chat_id=target_user,
+            text=f"🎉 Admin credited <b>${amount:.2f}</b> to your balance!\nNew Balance: <b>${new_bal:.2f}</b>",
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        logging.warning(f"Could not notify user {target_user}: {e}")
+
 async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message.from_user.id != ADMIN_ID:
         return
@@ -910,6 +946,7 @@ async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
            f"• <code>/setoxapay &lt;key&gt;</code>\n"
            f"• <code>/setbybit &lt;uid&gt;</code>\n"
            f"• <code>/setbybitkeys &lt;api_key&gt; &lt;api_secret&gt;</code>\n"
+           f"• <code>/credituser &lt;user_id&gt; &lt;amount&gt;</code>\n"
            f"• <code>/addstock &lt;product_id&gt;</code>")
     await update.message.reply_text(msg, parse_mode="HTML")
 
@@ -985,6 +1022,7 @@ def main() -> None:
     application.add_handler(CommandHandler("setoxapay", setoxapay))
     application.add_handler(CommandHandler("setbybit", setbybit))
     application.add_handler(CommandHandler("setbybitkeys", setbybitkeys))
+    application.add_handler(CommandHandler("credituser", credituser))
     application.add_handler(CommandHandler("settings", settings_command))
     application.add_handler(CallbackQueryHandler(button_handler))
     application.add_handler(MessageHandler(filters.StatusUpdate.WEB_APP_DATA, web_app_data_handler))
