@@ -151,9 +151,55 @@ def get_user_balance(user_id):
 def update_user_balance(user_id, amount_change):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    cursor.execute('UPDATE users SET balance = balance + ? WHERE user_id = ?', (amount_change, user_id))
+    cursor.execute('SELECT balance FROM users WHERE user_id = ?', (user_id,))
+    if cursor.fetchone() is None:
+        cursor.execute('INSERT INTO users (user_id, balance) VALUES (?, ?)', (user_id, amount_change))
+    else:
+        cursor.execute('UPDATE users SET balance = balance + ? WHERE user_id = ?', (amount_change, user_id))
     conn.commit()
     conn.close()
+
+def set_user_balance_exact(user_id, new_balance):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute('INSERT OR REPLACE INTO users (user_id, balance) VALUES (?, ?)', (user_id, new_balance))
+    conn.commit()
+    conn.close()
+
+def get_user_info(user_id):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute('SELECT balance FROM users WHERE user_id = ?', (user_id,))
+    user_row = cursor.fetchone()
+    if not user_row:
+        conn.close()
+        return None
+
+    balance = user_row[0]
+    cursor.execute('SELECT COUNT(*), SUM(amount) FROM transactions WHERE user_id = ? AND status = "completed"', (user_id,))
+    tx_summary = cursor.fetchone()
+    tx_count = tx_summary[0] if tx_summary else 0
+    total_spent = tx_summary[1] if tx_summary and tx_summary[1] else 0.0
+
+    cursor.execute('SELECT track_id, amount, method, status FROM transactions WHERE user_id = ? ORDER BY track_id DESC LIMIT 5', (user_id,))
+    recent_txs = cursor.fetchall()
+    conn.close()
+
+    return {
+        "user_id": user_id,
+        "balance": balance,
+        "tx_count": tx_count,
+        "total_spent": total_spent,
+        "recent_txs": recent_txs
+    }
+
+def get_all_users_list(limit=25):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute('SELECT user_id, balance FROM users ORDER BY balance DESC LIMIT ?', (limit,))
+    rows = cursor.fetchall()
+    conn.close()
+    return rows
 
 def get_product_stock(product_id):
     conn = sqlite3.connect(DB_PATH)
@@ -169,6 +215,18 @@ def add_inventory_items(product_id, items):
     cursor.executemany('INSERT INTO inventory (product_id, data) VALUES (?, ?)', [(product_id, item) for item in items])
     conn.commit()
     conn.close()
+
+def clear_inventory_items(product_id=None):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    if product_id and product_id != "all":
+        cursor.execute('DELETE FROM inventory WHERE product_id = ?', (product_id,))
+    else:
+        cursor.execute('DELETE FROM inventory')
+    deleted_count = cursor.rowcount
+    conn.commit()
+    conn.close()
+    return deleted_count
 
 def take_inventory_items(product_id, qty):
     conn = sqlite3.connect(DB_PATH)
@@ -869,6 +927,106 @@ async def addstock(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     new_stock = get_product_stock(product_id)
     await update.message.reply_text(f"✅ Added {len(codes)} items to '{product_id}'. Total stock is now {new_stock}.")
 
+async def clearstock(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message.from_user.id != ADMIN_ID:
+        return
+    if not context.args:
+        await update.message.reply_text(
+            "❌ Usage:\n"
+            "• <code>/clearstock &lt;product_id&gt;</code> (e.g. <code>/clearstock hotmail</code> or <code>/clearstock office365</code>)\n"
+            "• <code>/clearstock all</code> (clears ALL products inventory)",
+            parse_mode="HTML"
+        )
+        return
+
+    target = context.args[0].strip().lower()
+    if target != "all" and target not in PRODUCTS:
+        await update.message.reply_text(f"❌ Unknown product id '{target}'. Available: {', '.join(PRODUCTS.keys())} or 'all'")
+        return
+
+    count = clear_inventory_items(target)
+    if target == "all":
+        await update.message.reply_text(f"🧹 Cleared all stock! Deleted {count} items from inventory.")
+    else:
+        new_stock = get_product_stock(target)
+        await update.message.reply_text(f"🧹 Cleared stock for '{target}'! Deleted {count} items. Stock is now {new_stock}.")
+
+async def user_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message.from_user.id != ADMIN_ID:
+        return
+    if not context.args:
+        await update.message.reply_text("❌ Usage: <code>/user &lt;user_id&gt;</code> (e.g. <code>/user 1477846847</code>)", parse_mode="HTML")
+        return
+
+    try:
+        target_id = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("❌ Invalid Telegram User ID.")
+        return
+
+    info = get_user_info(target_id)
+    if not info:
+        await update.message.reply_text(f"❌ User <code>{target_id}</code> not found in database.", parse_mode="HTML")
+        return
+
+    msg = (f"👤 <b>User Profile & Account Info</b>\n\n"
+           f"• User ID: <code>{info['user_id']}</code>\n"
+           f"• Balance: <b>${info['balance']:.2f}</b>\n"
+           f"• Total Orders/Completed TXs: <b>{info['tx_count']}</b>\n"
+           f"• Total Spent/Deposited: <b>${info['total_spent']:.2f}</b>\n\n"
+           f"<b>Quick Actions:</b>\n"
+           f"• Credit Balance: <code>/credituser {info['user_id']} &lt;amount&gt;</code>\n"
+           f"• Set Exact Balance: <code>/setbalance {info['user_id']} &lt;new_balance&gt;</code>")
+    
+    if info['recent_txs']:
+        msg += "\n\n<b>Recent Transactions:</b>\n"
+        for tx in info['recent_txs']:
+            msg += f"• Track #{tx[0]} | ${tx[1]:.2f} | {str(tx[2]).upper()} | {tx[3]}\n"
+
+    await update.message.reply_text(msg, parse_mode="HTML")
+
+async def users_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message.from_user.id != ADMIN_ID:
+        return
+
+    users = get_all_users_list()
+    if not users:
+        await update.message.reply_text("ℹ️ No registered users found yet.")
+        return
+
+    msg = f"👥 <b>Registered Users ({len(users)} shown):</b>\n\n"
+    for u_id, bal in users:
+        msg += f"• User ID: <code>{u_id}</code> | Balance: <b>${bal:.2f}</b> (<code>/user {u_id}</code>)\n"
+
+    await update.message.reply_text(msg, parse_mode="HTML")
+
+async def setbalance(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message.from_user.id != ADMIN_ID:
+        return
+    if len(context.args) < 2:
+        await update.message.reply_text("❌ Usage: <code>/setbalance &lt;user_id&gt; &lt;new_balance&gt;</code>", parse_mode="HTML")
+        return
+    try:
+        target_user = int(context.args[0])
+        new_balance = float(context.args[1])
+        if new_balance < 0:
+            raise ValueError
+    except ValueError:
+        await update.message.reply_text("❌ Invalid user_id or balance value.")
+        return
+
+    set_user_balance_exact(target_user, new_balance)
+    await update.message.reply_text(f"✅ Set balance for user <code>{target_user}</code> to <b>${new_balance:.2f}</b>.", parse_mode="HTML")
+
+    try:
+        await context.bot.send_message(
+            chat_id=target_user,
+            text=f"ℹ️ Your account balance has been updated by Admin.\nNew Balance: <b>${new_balance:.2f}</b>",
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        logging.warning(f"Could not notify user {target_user}: {e}")
+
 async def setoxapay(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message.from_user.id != ADMIN_ID:
         return
@@ -938,16 +1096,22 @@ async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     by_uid_status = f"✅ Set ({by_uid})" if by_uid and by_uid != "YOUR_BYBIT_UID_HERE" else "❌ Not Configured"
     by_api_status = "✅ Set" if by_key else "❌ Not Configured"
 
-    msg = (f"⚙️ <b>Bot Settings</b>\n\n"
+    msg = (f"⚙️ <b>Bot Settings & Control Panel</b>\n\n"
            f"OxaPay Merchant Key: {ox_status}\n"
            f"Bybit UID: {by_uid_status}\n"
            f"Bybit API Key: {by_api_status}\n\n"
-           f"<b>Admin Commands:</b>\n"
+           f"<b>Admin Inventory Commands:</b>\n"
+           f"• <code>/clearstock &lt;product_id|all&gt;</code> - Clear stock\n"
+           f"• <code>/addstock &lt;product_id&gt;</code> - Add stock\n\n"
+           f"<b>Admin User Management Commands:</b>\n"
+           f"• <code>/users</code> - List all users\n"
+           f"• <code>/user &lt;user_id&gt;</code> - View profile & balance\n"
+           f"• <code>/credituser &lt;user_id&gt; &lt;amount&gt;</code> - Add balance\n"
+           f"• <code>/setbalance &lt;user_id&gt; &lt;amount&gt;</code> - Set exact balance\n\n"
+           f"<b>Admin Config Commands:</b>\n"
            f"• <code>/setoxapay &lt;key&gt;</code>\n"
            f"• <code>/setbybit &lt;uid&gt;</code>\n"
-           f"• <code>/setbybitkeys &lt;api_key&gt; &lt;api_secret&gt;</code>\n"
-           f"• <code>/credituser &lt;user_id&gt; &lt;amount&gt;</code>\n"
-           f"• <code>/addstock &lt;product_id&gt;</code>")
+           f"• <code>/setbybitkeys &lt;key&gt; &lt;secret&gt;</code>")
     await update.message.reply_text(msg, parse_mode="HTML")
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1019,6 +1183,10 @@ def main() -> None:
 
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("addstock", addstock))
+    application.add_handler(CommandHandler("clearstock", clearstock))
+    application.add_handler(CommandHandler("user", user_command))
+    application.add_handler(CommandHandler("users", users_command))
+    application.add_handler(CommandHandler("setbalance", setbalance))
     application.add_handler(CommandHandler("setoxapay", setoxapay))
     application.add_handler(CommandHandler("setbybit", setbybit))
     application.add_handler(CommandHandler("setbybitkeys", setbybitkeys))
