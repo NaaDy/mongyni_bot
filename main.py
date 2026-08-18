@@ -217,7 +217,7 @@ def set_setting(key, value):
     conn.close()
 
 def get_bot_token():
-    return get_setting("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
+    return get_setting("BOT_TOKEN", "8888557527:AAGWriAwfnIaGGWZVrIrJ8b6LWoGBDtz6AY")
 
 def get_oxapay_merchant_key():
     return get_setting("OXAPAY_MERCHANT_KEY", "YOUR_OXAPAY_MERCHANT_KEY")
