@@ -65,10 +65,10 @@ PRODUCTS = {
 ⚡ Fast service
 🔑 OAuth2 V8 format
 📅 7–90 Days Aged accounts""",
-        "price": 0.018,
+        "price": 0.009,
         "bulk_discounts": [
-            {"min_qty": 50, "price": 0.015},
-            {"min_qty": 100, "price": 0.012}
+            {"min_qty": 50, "price": 0.008},
+            {"min_qty": 100, "price": 0.007}
         ]
     },
     "hotmail_graph": {
@@ -94,10 +94,10 @@ Get trusted, long-term Hotmail accounts with OAuth2 Graph API access, valid for 
 🚀 Instant delivery 24/7
 🔑 OAuth2 Graph API access
 📅 Live 12 - 36 Months (100% 7day skip Zin)""",
-        "price": 0.019,
+        "price": 0.01,
         "bulk_discounts": [
-            {"min_qty": 50, "price": 0.016},
-            {"min_qty": 100, "price": 0.013}
+            {"min_qty": 50, "price": 0.009},
+            {"min_qty": 100, "price": 0.008}
         ]
     },
 }
