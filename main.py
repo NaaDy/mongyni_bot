@@ -34,10 +34,10 @@ PRODUCTS = {
     "office365": {
         "name": "Office 365 1TB",
         "description": "1TB OneDrive storage + full Office apps, 1 year subscription.",
-        "price": 1.30,
+        "price": 0.9,
         "bulk_discounts": [
-            {"min_qty": 5, "price": 1.20},
-            {"min_qty": 10, "price": 1.10}
+            {"min_qty": 5, "price": 0.8},
+            {"min_qty": 10, "price": 0.6}
         ]
     },
     "hotmail": {
