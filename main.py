@@ -32,12 +32,20 @@ MINI_APP_URL = os.getenv("MINI_APP_URL", "https://naady.github.io/mongyni_bot/")
 # --- PRODUCTS WITH BULK DISCOUNTS ---
 PRODUCTS = {
     "office365": {
+        "name": "Office 365 100G",
+        "description": "100g OneDrive storage + full Office apps, 1 year subscription.",
+        "price": 0.15,
+        "bulk_discounts": [
+            {"min_qty": 50, "price": 0.13},
+            {"min_qty": 100, "price": 0.10}
+        ]
+        "office365": {
         "name": "Office 365 1TB",
         "description": "1TB OneDrive storage + full Office apps, 1 year subscription.",
-        "price": 0.9,
+        "price": 0.20,
         "bulk_discounts": [
-            {"min_qty": 5, "price": 0.8},
-            {"min_qty": 10, "price": 0.6}
+            {"min_qty": 50, "price": 0.18},
+            {"min_qty": 100, "price": 0.15}
         ]
     },
     "hotmail": {
